@@ -1,0 +1,312 @@
+name: Build Android APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Generate Android AI Agent Project
+        run: |
+          python3 - << 'PYEOF'
+          from pathlib import Path
+          files = {
+          "settings.gradle.kts": '''pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = "AndroidAIAgentApp"
+          include(":app")
+          ''',
+          "build.gradle.kts": '''plugins {
+              id("com.android.application") version "8.7.2" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+          }
+          ''',
+          "gradle.properties": "org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\n",
+          "app/build.gradle.kts": '''plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.aiagent.android"
+              compileSdk = 35
+              defaultConfig {
+                  applicationId = "com.aiagent.android"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          ''',
+          "app/src/main/AndroidManifest.xml": '''<?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+              <application android:label="Android AI Agent" android:supportsRtl="true" android:theme="@android:style/Theme.Material.Light">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service android:name=".AgentAccessibilityService" android:exported="false" android:label="Android AI Agent Service" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+                      <meta-data android:name="android.accessibilityservice.AccessibilityService" android:resource="@xml/agent_accessibility_config" />
+                  </service>
+              </application>
+          </manifest>
+          ''',
+          "app/src/main/res/xml/agent_accessibility_config.xml": '''<?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="true"
+              android:notificationTimeout="150" />
+          ''',
+          "app/src/main/java/com/aiagent/android/AgentAccessibilityService.kt": '''package com.aiagent.android
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.content.Intent
+          import android.graphics.Path
+          import android.graphics.Rect
+          import android.os.Bundle
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+
+          data class ScreenElement(val id: Int, val text: String, val desc: String, val viewId: String, val cls: String, val clickable: Boolean, val editable: Boolean, val scrollable: Boolean, val bounds: Rect, val node: AccessibilityNodeInfo) {
+              fun toLine(): String = "[$id] text=\\"$text\\" desc=\\"$desc\\" id=${viewId.substringAfterLast('/')} (${if (clickable) "click," else ""}${if (editable) "edit," else ""}${if (scrollable) "scroll" else ""}) @(${bounds.centerX()},${bounds.centerY()})"
+          }
+
+          class AgentAccessibilityService : AccessibilityService() {
+              companion object { @Volatile var instance: AgentAccessibilityService? = null }
+              override fun onServiceConnected() { super.onServiceConnected(); instance = this }
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+              override fun onDestroy() { super.onDestroy(); instance = null }
+              fun screenSize(): Pair<Int, Int> = resources.displayMetrics.widthPixels to resources.displayMetrics.heightPixels
+
+              fun captureElements(limit: Int = 80): List<ScreenElement> {
+                  val root = rootInActiveWindow ?: return emptyList()
+                  val list = mutableListOf<ScreenElement>()
+                  var id = 1
+                  fun walk(n: AccessibilityNodeInfo?) {
+                      if (n == null || list.size >= limit) return
+                      val t = n.text?.toString()?.trim().orEmpty().take(70)
+                      val d = n.contentDescription?.toString()?.trim().orEmpty().take(70)
+                      val r = Rect(); n.getBoundsInScreen(r)
+                      if (r.width() > 0 && r.height() > 0 && (t.isNotEmpty() || d.isNotEmpty() || n.isClickable || n.isEditable || n.isScrollable)) {
+                          list.add(ScreenElement(id++, t, d, n.viewIdResourceName.orEmpty(), n.className?.toString().orEmpty(), n.isClickable, n.isEditable, n.isScrollable, r, n))
+                      }
+                      for (i in 0 until n.childCount) walk(n.getChild(i))
+                  }
+                  walk(root)
+                  return list
+              }
+
+              fun clickEl(el: ScreenElement): String {
+                  if (el.node.isClickable && el.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return "Clicked [${el.id}]"
+                  return tap(el.bounds.centerX().toFloat(), el.bounds.centerY().toFloat())
+              }
+
+              fun tap(x: Float, y: Float): String {
+                  val p = Path().apply { moveTo(x, y) }
+                  val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, 80)).build()
+                  return if (dispatchGesture(g, null, null)) "Tapped (${x.toInt()},${y.toInt()})" else "Tap failed"
+              }
+
+              fun typeText(el: ScreenElement?, txt: String): String {
+                  val target = el?.node ?: rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return "No input field"
+                  target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                  val b = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, txt) }
+                  return if (target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, b)) "Typed: $txt" else "Type failed"
+              }
+
+              fun swipe(dir: String): String {
+                  val (w, h) = screenSize(); val cx = w / 2f; val cy = h / 2f
+                  val pts = when (dir.lowercase()) {
+                      "up" -> floatArrayOf(cx, h * 0.78f, cx, h * 0.25f)
+                      "down" -> floatArrayOf(cx, h * 0.25f, cx, h * 0.78f)
+                      "left" -> floatArrayOf(w * 0.85f, cy, w * 0.15f, cy)
+                      else -> floatArrayOf(w * 0.15f, cy, w * 0.85f, cy)
+                  }
+                  val p = Path().apply { moveTo(pts[0], pts[1]); lineTo(pts[2], pts[3]) }
+                  val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, 300)).build()
+                  return if (dispatchGesture(g, null, null)) "Swiped $dir" else "Swipe failed"
+              }
+
+              fun globalAct(name: String): String {
+                  val c = when (name.uppercase()) {
+                      "BACK" -> GLOBAL_ACTION_BACK; "HOME" -> GLOBAL_ACTION_HOME; "RECENTS" -> GLOBAL_ACTION_RECENTS
+                      "NOTIFICATIONS" -> GLOBAL_ACTION_NOTIFICATIONS; else -> GLOBAL_ACTION_QUICK_SETTINGS
+                  }
+                  return if (performGlobalAction(c)) "Global $name" else "Global failed"
+              }
+
+              fun openApp(pkg: String): String {
+                  val i = packageManager.getLaunchIntentForPackage(pkg.trim()) ?: return "App not found: $pkg"
+                  i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(i); return "Opened $pkg"
+              }
+
+              fun listApps(q: String?): String {
+                  val ql = q?.lowercase().orEmpty()
+                  val apps = packageManager.getInstalledApplications(0).mapNotNull { info ->
+                      if (packageManager.getLaunchIntentForPackage(info.packageName) == null) null
+                      else "${packageManager.getApplicationLabel(info)} (${info.packageName})"
+                  }.filter { ql.isBlank() || it.lowercase().contains(ql) }.sorted().take(35)
+                  return if (apps.isEmpty()) "No apps matched" else apps.joinToString(", ")
+              }
+          }
+          ''',
+          "app/src/main/java/com/aiagent/android/MainActivity.kt": '''package com.aiagent.android
+          import android.app.Activity
+          import android.app.AlertDialog
+          import android.content.Intent
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.text.InputType
+          import android.view.View
+          import android.widget.*
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.util.concurrent.CountDownLatch
+          import java.util.concurrent.atomic.AtomicBoolean
+
+          class MainActivity : Activity() {
+              private lateinit var tvStatus: TextView
+              private lateinit var etKey: EditText
+              private lateinit var etTask: EditText
+              private lateinit var btnRun: Button
+              private lateinit var btnStop: Button
+              private lateinit var tvLog: TextView
+              private lateinit var scroll: ScrollView
+              private val running = AtomicBoolean(false)
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val prefs = getSharedPreferences("agent_prefs", MODE_PRIVATE)
+                  val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36, 36, 36, 36); layoutDirection = View.LAYOUT_DIRECTION_RTL }
+                  val title = TextView(this).apply { text = "ایجنت هوشمند اندروید"; textSize = 22f }
+                  tvStatus = TextView(this).apply { textSize = 14f }
+                  val btnAcc = Button(this).apply { text = "فعال‌سازی سرویس دسترسی (Accessibility)"; setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } }
+                  etKey = EditText(this).apply { hint = "کلید Gemini API"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD; setText(prefs.getString("key", "")) }
+                  etTask = EditText(this).apply { hint = "تسک خود را بنویسید..."; minLines = 3 }
+                  val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                  btnRun = Button(this).apply { text = "شروع تسک"; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+                  btnStop = Button(this).apply { text = "توقف"; isEnabled = false; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
+                  row.addView(btnRun); row.addView(btnStop)
+                  tvLog = TextView(this).apply { text = "آماده دریافت تسک..."; textSize = 12f }
+                  scroll = ScrollView(this).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f); addView(tvLog) }
+                  listOf(title, tvStatus, btnAcc, etKey, etTask, row, scroll).forEach { root.addView(it) }
+                  setContentView(root)
+
+                  btnRun.setOnClickListener {
+                      val key = etKey.text.toString().trim(); val task = etTask.text.toString().trim()
+                      if (key.isEmpty() || task.isEmpty()) { log("⚠️ کلید API و متن تسک را وارد کنید."); return@setOnClickListener }
+                      if (AgentAccessibilityService.instance == null) { log("⚠️ ابتدا سرویس Accessibility را فعال کنید."); return@setOnClickListener }
+                      prefs.edit().putString("key", key).apply()
+                      tvLog.text = ""; running.set(true); btnRun.isEnabled = false; btnStop.isEnabled = true
+                      Thread { runLoop(key, task) }.start()
+                  }
+                  btnStop.setOnClickListener { running.set(false); log("⛔ متوقف شد.") }
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  tvStatus.text = if (AgentAccessibilityService.instance != null) "سرویس دسترسی: فعال ✅" else "سرویس دسترسی: غیرفعال ❌"
+              }
+
+              private fun log(msg: String) = runOnUiThread { tvLog.append("$msg\n"); scroll.post { scroll.fullScroll(View.FOCUS_DOWN) } }
+
+              private fun confirm(msg: String): Boolean {
+                  val latch = CountDownLatch(1); var ok = false
+                  runOnUiThread {
+                      AlertDialog.Builder(this).setTitle("تأیید اقدام حساس").setMessage(msg).setCancelable(false)
+                          .setPositiveButton("اجرا کن") { _, _ -> ok = true; latch.countDown() }
+                          .setNegativeButton("لغو") { _, _ -> ok = false; latch.countDown() }.show()
+                  }
+                  latch.await(); return ok
+              }
+
+              private fun callGemini(key: String, prompt: String): JSONObject {
+                  val sys = "You are an Android AI Agent. Return ONLY JSON: {thought, action (tap|type_text|swipe|global_action|open_app|list_apps|wait|done|fail), element_id, x, y, text, direction, global_action, requires_confirmation, confirmation_message, final_message}. Set requires_confirmation=true before sending messages, payments, deletions, or calls."
+                  val body = JSONObject().apply {
+                      put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
+                      put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
+                      put("generationConfig", JSONObject().put("temperature", 0.1).put("responseMimeType", "application/json"))
+                  }
+                  val conn = (URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$key").openConnection() as HttpURLConnection).apply {
+                      requestMethod = "POST"; doOutput = true; setRequestProperty("Content-Type", "application/json"); connectTimeout = 20000; readTimeout = 45000
+                  }
+                  conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                  val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
+                  val raw = stream.bufferedReader().readText()
+                  if (conn.responseCode !in 200..299) throw RuntimeException("API ${conn.responseCode}: ${raw.take(200)}")
+                  val txt = JSONObject(raw).getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+                  return JSONObject(txt)
+              }
+
+              private fun runLoop(key: String, task: String) {
+                  try {
+                      val svc = AgentAccessibilityService.instance ?: return
+                      val history = mutableListOf<String>()
+                      log("🎯 شروع تسک: $task")
+                      for (step in 1..20) {
+                          if (!running.get()) break
+                          log("\n--- مرحله $step/20 ---")
+                          val (w, h) = svc.screenSize()
+                          val els = svc.captureElements()
+                          val ui = els.joinToString("\n") { it.toLine() }
+                          val prompt = "Goal: $task\nScreen: ${w}x${h}\nHistory:\n${history.takeLast(8).joinToString("\n")}\nUI:\n$ui"
+                          val d = callGemini(key, prompt)
+                          val act = d.optString("action", "fail")
+                          log("🧠 ${d.optString("thought")}")
+                          log("⚡ $act")
+                          if (act == "done") { log("✅ ${d.optString("final_message", "انجام شد.")}"); break }
+                          if (act == "fail") { log("❌ ${d.optString("final_message", "ناموفق.")}"); break }
+                          if (d.optBoolean("requires_confirmation", false) && !confirm(d.optString("confirmation_message", act))) { log("⛔ لغو شد."); break }
+                          val byId = els.associateBy { it.id }
+                          val obs = when (act) {
+                              "tap" -> { val el = if (!d.isNull("element_id")) byId[d.optInt("element_id")] else null; if (el != null) svc.clickEl(el) else svc.tap(d.optInt("x").toFloat(), d.optInt("y").toFloat()) }
+                              "type_text" -> svc.typeText(if (!d.isNull("element_id")) byId[d.optInt("element_id")] else null, d.optString("text"))
+                              "swipe" -> svc.swipe(d.optString("direction", "up"))
+                              "global_action" -> svc.globalAct(d.optString("global_action", "HOME"))
+                              "open_app" -> svc.openApp(d.optString("text"))
+                              "list_apps" -> svc.listApps(d.optString("text"))
+                              "wait" -> { Thread.sleep(2000); "Waited 2s" }
+                              else -> "Unknown"
+                          }
+                          log("📱 $obs"); history.add("Step $step: $act -> $obs"); Thread.sleep(1300)
+                      }
+                  } catch (e: Exception) { log("❌ خطا: ${e.message}") }
+                  finally { running.set(false); runOnUiThread { btnRun.isEnabled = true; btnStop.isEnabled = false } }
+              }
+          }
+          '''
+          }
+          for k, v in files.items():
+              p = Path(k); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(v.lstrip("\n"), encoding="utf-8")
+          PYEOF
+      - name: Build Debug APK
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AndroidAIAgent-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
