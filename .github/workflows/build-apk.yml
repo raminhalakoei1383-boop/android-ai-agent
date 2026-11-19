@@ -1,4 +1,4 @@
-name: Build Android APK v1.4
+name: Build Android APK v1.5
 
 on:
   push:
@@ -16,14 +16,14 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Generate v1.4 Android Project
+      - name: Generate v1.5 Android Project
         run: |
           python3 - << 'PYEOF'
-          import os
+          import os, textwrap
           def w(p, c):
               os.makedirs(os.path.dirname(p), exist_ok=True)
               with open(p, "w", encoding="utf-8") as f:
-                  f.write(c.lstrip("\n"))
+                  f.write(textwrap.dedent(c).lstrip("\n"))
 
           w("AndroidAIAgentApp/settings.gradle.kts", r"""
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
@@ -54,8 +54,8 @@ jobs:
                   applicationId = "com.aiagent.android"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 5
-                  versionName = "1.4"
+                  versionCode = 6
+                  versionName = "1.5"
               }
               signingConfigs {
                   create("release") {
@@ -128,7 +128,7 @@ jobs:
               android:canPerformGestures="true"
               android:canRetrieveWindowContent="true"
               android:canTakeScreenshot="true"
-              android:notificationTimeout="100" />
+              android:notificationTimeout="80" />
           """)
 
           w("AndroidAIAgentApp/app/src/main/java/com/aiagent/android/AgentBus.kt", r"""
@@ -246,7 +246,7 @@ jobs:
                       gravity = Gravity.CENTER_VERTICAL
                   }
                   val title = TextView(this).apply {
-                      text = "دستیار هوشمند v1.4"
+                      text = "دستیار هوشمند v1.5"
                       setTextColor(Color.WHITE)
                       textSize = 18f
                       setTypeface(null, Typeface.BOLD)
@@ -345,7 +345,7 @@ jobs:
                       }
                       synchronized(AgentBus.taskQueue) { AgentBus.taskQueue.addLast(task) }
                       if (AgentBus.isRunning) {
-                          AgentBus.addMessage(this, "agent", "دستور جدید در صف قرار گرفت و بلافاصله پس از کار فعلی اجرا می‌شود.")
+                          AgentBus.addMessage(this, "agent", "دستور در صف قرار گرفت و بلافاصله پس از کار فعلی اجرا می‌شود.")
                       } else {
                           svc.startQueue(applicationContext, key, model)
                       }
@@ -492,35 +492,45 @@ jobs:
               }
 
               private fun runSingleTask(ctx: Context, apiKey: String, model: String, task: String) {
-                  AgentBus.addMessage(ctx, "agent", "شروع اجرای دقیق دستور: $task")
+                  AgentBus.addMessage(ctx, "agent", "⚡ شروع اجرای سریع و کامل: $task")
                   val history = mutableListOf<String>()
                   var lastSig = ""
                   var stuckCount = 0
+                  var forceVisionNext = false
 
-                  for (step in 1..35) {
+                  for (step in 1..40) {
                       if (AgentBus.stopRequested) {
                           AgentBus.addMessage(ctx, "agent", "اجرا متوقف شد.")
                           return
                       }
-                      val uiDump = dumpUI()
-                      val sig = uiDump.take(400)
+                      val (pkgName, uiDump, nodeCount) = dumpUI()
+                      val sig = "$pkgName|${uiDump.take(350)}"
                       if (sig == lastSig) stuckCount++ else { stuckCount = 0; lastSig = sig }
-                      val screenshotB64 = captureScreenshotBase64()
+
+                      val needVision = forceVisionNext || stuckCount >= 1 || nodeCount < 6
+                      forceVisionNext = false
+                      val screenshotB64 = if (needVision) captureScreenshotBase64() else null
                       val dm = resources.displayMetrics
+
                       val prompt = buildString {
-                          append("You are an expert Android automation agent. Complete the user task accurately and completely without stopping early.\n")
-                          append("Screen: ${dm.widthPixels}x${dm.heightPixels}\n")
-                          append("User Task: $task\n")
-                          append("Step: $step/35\n")
-                          if (history.isNotEmpty()) append("Previous steps:\n${history.takeLast(8).joinToString("\n")}\n")
-                          if (stuckCount >= 2) append("WARNING: Screen did not change for $stuckCount steps. Try a different coordinate, scroll, or back.\n")
-                          append("Visible UI Elements:\n$uiDump\n")
-                          append("Respond ONLY with valid JSON: {\"thought\":\"short Persian status\",\"action\":\"open_app|tap|click_text|long_click|type|scroll|back|home|wait|done\",\"x\":0,\"y\":0,\"text\":\"\",\"app\":\"\",\"direction\":\"down\",\"enter\":true,\"message\":\"Persian final answer\"}")
+                          append("You are a fast, precise Android automation agent. You MUST complete EVERY SINGLE PART of the user's command accurately before returning action=done.\n")
+                          append("Screen: ${dm.widthPixels}x${dm.heightPixels} | ActiveApp: $pkgName\n")
+                          append("User Command: $task\n")
+                          append("Step: $step/40\n")
+                          if (history.isNotEmpty()) append("Done so far:\n${history.takeLast(10).joinToString("\n")}\n")
+                          if (stuckCount >= 1) append("WARNING: Screen unchanged ($stuckCount). Use visual coordinates, scroll, or a different control.\n")
+                          append("UI Elements ($nodeCount):\n$uiDump\n")
+                          append("Rules:\n")
+                          append("1. Never return done until ALL steps in User Command are visually verified complete.\n")
+                          append("2. For speed, you may batch up to 2 actions in \"actions\" (e.g. tap input then type with enter=true).\n")
+                          append("3. If UI text is unclear or missing icons, return action=\"inspect_screen\" to request a screenshot.\n")
+                          append("Respond ONLY with compact JSON:\n")
+                          append("{\"thought\":\"short Persian status\",\"remaining\":\"what is still left or none\",\"action\":\"open_app|tap|click_text|long_click|type|scroll|back|home|wait|inspect_screen|done\",\"x\":0,\"y\":0,\"text\":\"\",\"app\":\"\",\"direction\":\"down\",\"enter\":true,\"actions\":[],\"message\":\"final Persian summary\"}")
                       }
 
                       val raw = callGeminiWithRetry(ctx, apiKey, model, prompt, screenshotB64)
                       if (raw == null) {
-                          AgentBus.addMessage(ctx, "agent", "خطا در ارتباط با سرور پس از چند تلاش مجدد. لطفاً اتصال اینترنت/VPN را بررسی کنید.")
+                          AgentBus.addMessage(ctx, "agent", "خطا در ارتباط با سرور پس از چند تلاش مجدد. اتصال اینترنت/VPN را بررسی کنید.")
                           return
                       }
                       val json = extractJson(raw)
@@ -528,42 +538,81 @@ jobs:
                           history.add("Step $step: invalid JSON")
                           continue
                       }
-                      val action = json.optString("action", "")
-                      val thought = json.optString("thought", "")
-                      if (thought.isNotBlank()) AgentBus.addMessage(ctx, "agent", "قدم $step: $thought")
-                      history.add("Step $step: $action (${json.optString("text")}${json.optString("app")})")
 
-                      when (action) {
-                          "done" -> {
-                              val msg = json.optString("message", "دستور با موفقیت انجام شد.")
-                              AgentBus.addMessage(ctx, "agent", "✅ $msg")
-                              return
-                          }
-                          "open_app" -> openAppByName(ctx, json.optString("app", ""))
-                          "tap" -> performTap(json.optInt("x", 0).toFloat(), json.optInt("y", 0).toFloat(), 100L)
-                          "long_click" -> performTap(json.optInt("x", 0).toFloat(), json.optInt("y", 0).toFloat(), 700L)
-                          "click_text" -> clickByText(json.optString("text", ""))
-                          "type" -> typeText(ctx, json.optString("text", ""), json.optInt("x", -1), json.optInt("y", -1), json.optBoolean("enter", true))
-                          "scroll" -> performScroll(json.optString("direction", "down"))
-                          "back" -> performGlobalAction(GLOBAL_ACTION_BACK)
-                          "home" -> performGlobalAction(GLOBAL_ACTION_HOME)
-                          "wait" -> Thread.sleep(2000)
+                      val thought = json.optString("thought", "")
+                      val remaining = json.optString("remaining", "").trim()
+                      val action = json.optString("action", "")
+                      if (thought.isNotBlank()) AgentBus.addMessage(ctx, "agent", "قدم $step: $thought")
+
+                      if (action == "inspect_screen") {
+                          forceVisionNext = true
+                          history.add("Step $step: requested screenshot")
+                          continue
                       }
-                      Thread.sleep(1600)
+
+                      if (action == "done") {
+                          val remLow = remaining.lowercase()
+                          val isStillLeft = remLow.isNotEmpty() && remLow !in setOf("none", "null", "nothing", "هیچ", "ندارد", "تمام", "0", "-")
+                          if (isStillLeft) {
+                              history.add("Step $step: blocked early done; remaining=$remaining")
+                              AgentBus.addMessage(ctx, "agent", "ادامه برای تکمیل بخش باقی‌مانده: $remaining")
+                              continue
+                          }
+                          val msg = json.optString("message", "همه مراحل دستور با موفقیت انجام شد.")
+                          AgentBus.addMessage(ctx, "agent", "✅ $msg")
+                          return
+                      }
+
+                      val batch = json.optJSONArray("actions")
+                      if (batch != null && batch.length() > 0) {
+                          val limit = minOf(batch.length(), 3)
+                          for (i in 0 until limit) {
+                              if (AgentBus.stopRequested) break
+                              val sub = batch.optJSONObject(i) ?: continue
+                              val subAct = sub.optString("action", "")
+                              if (subAct == "done") continue
+                              val delayMs = executeSingleAction(ctx, sub)
+                              history.add("Step $step.${i + 1}: $subAct (${sub.optString("text")}${sub.optString("app")})")
+                              Thread.sleep(delayMs)
+                          }
+                      } else {
+                          val delayMs = executeSingleAction(ctx, json)
+                          history.add("Step $step: $action (${json.optString("text")}${json.optString("app")})")
+                          Thread.sleep(delayMs)
+                      }
                   }
-                  AgentBus.addMessage(ctx, "agent", "به سقف ۳۵ مرحله رسیدم. اگر بخش دیگری باقی مانده دستور ادامه را بفرستید.")
+                  AgentBus.addMessage(ctx, "agent", "به سقف ۴۰ مرحله رسیدم. اگر بخش دیگری باقی مانده دستور ادامه را بفرستید.")
+              }
+
+              private fun executeSingleAction(ctx: Context, json: JSONObject): Long {
+                  return when (json.optString("action", "")) {
+                      "open_app" -> { openAppByName(ctx, json.optString("app", "")); 1150L }
+                      "tap" -> { performTap(json.optInt("x", 0).toFloat(), json.optInt("y", 0).toFloat(), 80L); 650L }
+                      "long_click" -> { performTap(json.optInt("x", 0).toFloat(), json.optInt("y", 0).toFloat(), 650L); 700L }
+                      "click_text" -> { clickByText(json.optString("text", "")); 650L }
+                      "type" -> {
+                          val enter = json.optBoolean("enter", true)
+                          typeText(ctx, json.optString("text", ""), json.optInt("x", -1), json.optInt("y", -1), enter)
+                          if (enter) 900L else 450L
+                      }
+                      "scroll" -> { performScroll(json.optString("direction", "down")); 650L }
+                      "back" -> { performGlobalAction(GLOBAL_ACTION_BACK); 600L }
+                      "home" -> { performGlobalAction(GLOBAL_ACTION_HOME); 700L }
+                      "wait" -> 1500L
+                      else -> 400L
+                  }
               }
 
               private fun callGeminiWithRetry(ctx: Context, apiKey: String, model: String, prompt: String, b64Img: String?): String? {
-                  val delays = longArrayOf(3000, 6000, 10000, 15000)
+                  val delays = longArrayOf(1500, 3000, 6000, 10000)
                   for (attempt in 0..delays.size) {
                       if (AgentBus.stopRequested) return null
                       try {
                           val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey")
                           val conn = (url.openConnection() as HttpURLConnection).apply {
                               requestMethod = "POST"
-                              connectTimeout = 25000
-                              readTimeout = 45000
+                              connectTimeout = 20000
+                              readTimeout = 35000
                               doOutput = true
                               setRequestProperty("Content-Type", "application/json; charset=utf-8")
                           }
@@ -573,7 +622,10 @@ jobs:
                           }
                           val body = JSONObject()
                               .put("contents", JSONArray().put(JSONObject().put("parts", parts)))
-                              .put("generationConfig", JSONObject().put("responseMimeType", "application/json"))
+                              .put("generationConfig", JSONObject()
+                                  .put("responseMimeType", "application/json")
+                                  .put("temperature", 0.1)
+                                  .put("maxOutputTokens", 350))
                           conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
                           val code = conn.responseCode
                           if (code in 200..299) {
@@ -584,7 +636,7 @@ jobs:
                           }
                           if (code == 429 || code == 503 || code >= 500) {
                               if (attempt < delays.size) {
-                                  AgentBus.addMessage(ctx, "agent", "سرور شلوغ است (کد $code)، تلاش مجدد تا ${delays[attempt] / 1000} ثانیه دیگر...")
+                                  AgentBus.addMessage(ctx, "agent", "سرور شلوغ است (کد $code)، تلاش مجدد...")
                                   Thread.sleep(delays[attempt])
                                   continue
                               }
@@ -592,7 +644,7 @@ jobs:
                           return null
                       } catch (e: Exception) {
                           if (attempt < delays.size) {
-                              AgentBus.addMessage(ctx, "agent", "تأخیر شبکه/Timeout، تلاش مجدد تا ${delays[attempt] / 1000} ثانیه دیگر...")
+                              AgentBus.addMessage(ctx, "agent", "تأخیر شبکه، تلاش مجدد...")
                               Thread.sleep(delays[attempt])
                           } else return null
                       }
@@ -608,12 +660,13 @@ jobs:
                   } catch (_: Exception) { null }
               }
 
-              private fun dumpUI(): String {
-                  val root = rootInActiveWindow ?: return "(no window)"
+              private fun dumpUI(): Triple<String, String, Int> {
+                  val root = rootInActiveWindow ?: return Triple("unknown", "(no window)", 0)
+                  val pkg = root.packageName?.toString() ?: "unknown"
                   val sb = StringBuilder()
                   var count = 0
                   fun walk(n: AccessibilityNodeInfo?) {
-                      if (n == null || count >= 90) return
+                      if (n == null || count >= 110) return
                       val t = n.text?.toString()?.trim().orEmpty()
                       val d = n.contentDescription?.toString()?.trim().orEmpty()
                       if (t.isNotEmpty() || d.isNotEmpty() || n.isClickable || n.isEditable) {
@@ -622,17 +675,18 @@ jobs:
                           if (r.width() > 0 && r.height() > 0) {
                               count++
                               sb.append("[$count] ")
-                              if (t.isNotEmpty()) sb.append("text=\"${t.take(50)}\" ")
-                              if (d.isNotEmpty()) sb.append("desc=\"${d.take(40)}\" ")
+                              if (t.isNotEmpty()) sb.append("t=\"${t.take(45)}\" ")
+                              if (d.isNotEmpty()) sb.append("d=\"${d.take(35)}\" ")
                               if (n.isEditable) sb.append("EDIT ")
-                              if (n.isClickable) sb.append("CLICK ")
+                              if (n.isClickable) sb.append("CLK ")
+                              if (n.isSelected || n.isChecked) sb.append("ON ")
                               sb.append("(${r.centerX()},${r.centerY()})\n")
                           }
                       }
                       for (i in 0 until n.childCount) walk(n.getChild(i))
                   }
                   walk(root)
-                  return sb.toString()
+                  return Triple(pkg, sb.toString(), count)
               }
 
               private fun captureScreenshotBase64(): String? {
@@ -646,10 +700,10 @@ jobs:
                                   val bmp = Bitmap.wrapHardwareBuffer(sr.hardwareBuffer, sr.colorSpace)
                                   if (bmp != null) {
                                       val sw = bmp.copy(Bitmap.Config.ARGB_8888, false)
-                                      val scale = minOf(1f, 720f / maxOf(sw.width, sw.height))
+                                      val scale = minOf(1f, 540f / maxOf(sw.width, sw.height))
                                       val resized = Bitmap.createScaledBitmap(sw, (sw.width * scale).toInt(), (sw.height * scale).toInt(), true)
                                       val out = ByteArrayOutputStream()
-                                      resized.compress(Bitmap.CompressFormat.JPEG, 55, out)
+                                      resized.compress(Bitmap.CompressFormat.JPEG, 45, out)
                                       result = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
                                       resized.recycle(); sw.recycle(); bmp.recycle()
                                   }
@@ -659,7 +713,7 @@ jobs:
                           }
                           override fun onFailure(errorCode: Int) { latch.countDown() }
                       })
-                      latch.await(3, TimeUnit.SECONDS)
+                      latch.await(2, TimeUnit.SECONDS)
                   } catch (_: Exception) {}
                   return result
               }
@@ -711,11 +765,11 @@ jobs:
                       cur = cur.parent
                   }
                   val r = Rect(); node.getBoundsInScreen(r)
-                  performTap(r.centerX().toFloat(), r.centerY().toFloat(), 100L)
+                  performTap(r.centerX().toFloat(), r.centerY().toFloat(), 80L)
               }
 
               private fun typeText(ctx: Context, text: String, x: Int, y: Int, enter: Boolean) {
-                  if (x > 0 && y > 0) { performTap(x.toFloat(), y.toFloat(), 80L); Thread.sleep(400) }
+                  if (x > 0 && y > 0) { performTap(x.toFloat(), y.toFloat(), 70L); Thread.sleep(280) }
                   val root = rootInActiveWindow ?: return
                   fun findEdit(n: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
                       if (n == null) return null
@@ -737,7 +791,7 @@ jobs:
                       edit.performAction(AccessibilityNodeInfo.ACTION_PASTE)
                   }
                   if (enter && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                      Thread.sleep(300)
+                      Thread.sleep(200)
                       edit.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
                   }
               }
@@ -749,7 +803,7 @@ jobs:
                   val y2 = if (dir == "up") dm.heightPixels * 0.75f else dm.heightPixels * 0.3f
                   val path = Path().apply { moveTo(cx, y1); lineTo(cx, y2) }
                   val gesture = GestureDescription.Builder()
-                      .addStroke(GestureDescription.StrokeDescription(path, 0, 350)).build()
+                      .addStroke(GestureDescription.StrokeDescription(path, 0, 280)).build()
                   dispatchGesture(gesture, null, null)
               }
           }
@@ -763,5 +817,5 @@ jobs:
         run: gradle assembleRelease --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: AndroidAIAgent-v1.4-APK
+          name: AndroidAIAgent-v1.5-APK
           path: AndroidAIAgentApp/app/build/outputs/apk/release/app-release.apk
