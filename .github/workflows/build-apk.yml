@@ -15,6 +15,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - name: Generate Signing Key
+        run: |
+          keytool -genkeypair -v -keystore release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias agentkey -storepass android123 -keypass android123 -dname "CN=AndroidAIAgent,O=Personal,C=IR"
       - name: Generate Android AI Agent Project
         run: |
           python3 - << 'PYEOF'
@@ -37,13 +40,27 @@ jobs:
           }
           android {
               namespace = "com.aiagent.android"
-              compileSdk = 35
+              compileSdk = 34
               defaultConfig {
                   applicationId = "com.aiagent.android"
                   minSdk = 26
-                  targetSdk = 35
-                  versionCode = 1
-                  versionName = "1.0"
+                  targetSdk = 34
+                  versionCode = 2
+                  versionName = "1.1"
+              }
+              signingConfigs {
+                  create("release") {
+                      storeFile = file("../release.jks")
+                      storePassword = "android123"
+                      keyAlias = "agentkey"
+                      keyPassword = "android123"
+                  }
+              }
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      signingConfig = signingConfigs.getByName("release")
+                  }
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -55,8 +72,13 @@ jobs:
           "app/src/main/AndroidManifest.xml": '''<?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-              <application android:label="Android AI Agent" android:supportsRtl="true" android:theme="@android:style/Theme.Material.Light">
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+              </queries>
+              <application android:icon="@android:drawable/sym_def_app_icon" android:label="Android AI Agent" android:supportsRtl="true" android:theme="@android:style/Theme.Material.Light">
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
@@ -304,9 +326,9 @@ jobs:
           for k, v in files.items():
               p = Path(k); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(v.lstrip("\n"), encoding="utf-8")
           PYEOF
-      - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon
+      - name: Build Release APK
+        run: gradle assembleRelease --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: AndroidAIAgent-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: AndroidAIAgent-Release-APK
+          path: app/build/outputs/apk/release/app-release.apk
