@@ -18,7 +18,7 @@ jobs:
       - name: Generate Signing Key
         run: |
           keytool -genkeypair -v -keystore release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias agentkey -storepass android123 -keypass android123 -dname "CN=AndroidAIAgent,O=Personal,C=IR"
-      - name: Generate Android AI Agent Project v1.2
+      - name: Generate Android AI Agent Project v1.3
         run: |
           python3 - << 'PYEOF'
           from pathlib import Path
@@ -45,8 +45,8 @@ jobs:
                   applicationId = "com.aiagent.android"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 3
-                  versionName = "1.2"
+                  versionCode = 4
+                  versionName = "1.3"
               }
               signingConfigs {
                   create("release") {
@@ -99,6 +99,7 @@ jobs:
               android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
               android:canPerformGestures="true"
               android:canRetrieveWindowContent="true"
+              android:canTakeScreenshot="true"
               android:notificationTimeout="150" />
           ''',
           "app/src/main/java/com/aiagent/android/AgentAccessibilityService.kt": r'''package com.aiagent.android
@@ -108,12 +109,18 @@ jobs:
           import android.content.ClipboardManager
           import android.content.Context
           import android.content.Intent
+          import android.graphics.Bitmap
           import android.graphics.Path
           import android.graphics.Rect
           import android.os.Build
           import android.os.Bundle
+          import android.util.Base64
+          import android.view.Display
           import android.view.accessibility.AccessibilityEvent
           import android.view.accessibility.AccessibilityNodeInfo
+          import java.io.ByteArrayOutputStream
+          import java.util.concurrent.CountDownLatch
+          import java.util.concurrent.TimeUnit
 
           data class ScreenElement(val id: Int, val text: String, val desc: String, val viewId: String, val cls: String, val clickable: Boolean, val editable: Boolean, val scrollable: Boolean, val bounds: Rect, val node: AccessibilityNodeInfo) {
               fun toLine(): String = "[$id] text=\"$text\" desc=\"$desc\" id=${viewId.substringAfterLast('/')} (${if (clickable) "click," else ""}${if (editable) "edit," else ""}${if (scrollable) "scroll" else ""}) @(${bounds.centerX()},${bounds.centerY()})"
@@ -126,19 +133,54 @@ jobs:
               override fun onInterrupt() {}
               override fun onDestroy() { super.onDestroy(); instance = null }
               fun screenSize(): Pair<Int, Int> = resources.displayMetrics.widthPixels to resources.displayMetrics.heightPixels
+              fun currentPackage(): String = rootInActiveWindow?.packageName?.toString().orEmpty()
 
               private fun norm(s: String): String = s.lowercase()
                   .replace('\u064a', '\u06cc').replace('\u0643', '\u06a9')
                   .replace("\u200c", "").replace(" ", "")
 
-              fun captureElements(limit: Int = 90): List<ScreenElement> {
+              fun captureScreenshotBase64(): String? {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+                  val latch = CountDownLatch(1)
+                  var outB64: String? = null
+                  try {
+                      takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+                          override fun onSuccess(screenshot: ScreenshotResult) {
+                              try {
+                                  val buf = screenshot.hardwareBuffer
+                                  val hw = Bitmap.wrapHardwareBuffer(buf, screenshot.colorSpace)
+                                  buf.close()
+                                  if (hw != null) {
+                                      val sw = hw.copy(Bitmap.Config.ARGB_8888, false)
+                                      hw.recycle()
+                                      val targetW = 540
+                                      val scaled = if (sw.width > targetW) {
+                                          val targetH = (sw.height * targetW.toFloat() / sw.width).toInt().coerceAtLeast(1)
+                                          Bitmap.createScaledBitmap(sw, targetW, targetH, true).also { sw.recycle() }
+                                      } else sw
+                                      val baos = ByteArrayOutputStream()
+                                      scaled.compress(Bitmap.CompressFormat.JPEG, 65, baos)
+                                      scaled.recycle()
+                                      outB64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+                                  }
+                              } catch (_: Exception) {}
+                              latch.countDown()
+                          }
+                          override fun onFailure(errorCode: Int) { latch.countDown() }
+                      })
+                      latch.await(4, TimeUnit.SECONDS)
+                  } catch (_: Exception) {}
+                  return outB64
+              }
+
+              fun captureElements(limit: Int = 110): List<ScreenElement> {
                   val root = rootInActiveWindow ?: return emptyList()
                   val list = mutableListOf<ScreenElement>()
                   var id = 1
                   fun walk(n: AccessibilityNodeInfo?) {
                       if (n == null || list.size >= limit) return
-                      val t = n.text?.toString()?.trim().orEmpty().take(70)
-                      val d = n.contentDescription?.toString()?.trim().orEmpty().take(70)
+                      val t = n.text?.toString()?.trim().orEmpty().take(80)
+                      val d = n.contentDescription?.toString()?.trim().orEmpty().take(80)
                       val r = Rect(); n.getBoundsInScreen(r)
                       if (r.width() > 0 && r.height() > 0 && (t.isNotEmpty() || d.isNotEmpty() || n.isClickable || n.isEditable || n.isScrollable)) {
                           list.add(ScreenElement(id++, t, d, n.viewIdResourceName.orEmpty(), n.className?.toString().orEmpty(), n.isClickable, n.isEditable, n.isScrollable, r, n))
@@ -151,9 +193,9 @@ jobs:
 
               fun clickEl(el: ScreenElement): String {
                   var cur: AccessibilityNodeInfo? = el.node
-                  repeat(3) {
+                  repeat(4) {
                       if (cur != null && cur!!.isClickable && cur!!.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                          return "Clicked [${el.id}]"
+                          return "Clicked [${el.id}] (${el.text.ifBlank { el.desc }})"
                       }
                       cur = cur?.parent
                   }
@@ -169,7 +211,7 @@ jobs:
               fun typeText(el: ScreenElement?, txt: String): String {
                   if (el != null) {
                       tap(el.bounds.centerX().toFloat(), el.bounds.centerY().toFloat())
-                      Thread.sleep(250)
+                      Thread.sleep(300)
                   }
                   val target = el?.node ?: rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return "No input field"
                   target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
@@ -198,7 +240,7 @@ jobs:
                       else -> floatArrayOf(w * 0.15f, cy, w * 0.85f, cy)
                   }
                   val p = Path().apply { moveTo(pts[0], pts[1]); lineTo(pts[2], pts[3]) }
-                  val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, 300)).build()
+                  val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(p, 0, 320)).build()
                   return if (dispatchGesture(g, null, null)) "Swiped $dir" else "Swipe failed"
               }
 
@@ -272,12 +314,12 @@ jobs:
                   super.onCreate(savedInstanceState)
                   val prefs = getSharedPreferences("agent_prefs", MODE_PRIVATE)
                   val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36, 36, 36, 36); layoutDirection = View.LAYOUT_DIRECTION_RTL }
-                  val title = TextView(this).apply { text = "ایجنت هوشمند اندروید v1.2"; textSize = 20f }
+                  val title = TextView(this).apply { text = "ایجنت هوشمند اندروید v1.3 (بینایی زنده)"; textSize = 19f }
                   tvStatus = TextView(this).apply { textSize = 14f }
                   val btnAcc = Button(this).apply { text = "فعال‌سازی سرویس دسترسی (Accessibility)"; setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) } }
                   etKey = EditText(this).apply { hint = "کلید Gemini API"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD; setText(prefs.getString("key", "")) }
-                  etModel = EditText(this).apply { hint = "مدل (مثلاً gemini-2.5-flash-lite)"; setText(prefs.getString("model", "gemini-2.5-flash-lite")) }
-                  etTask = EditText(this).apply { hint = "تسک خود را بنویسید (مثلاً: دیجی کالا را باز کن و گوشی جستجو کن)"; minLines = 2 }
+                  etModel = EditText(this).apply { hint = "مدل (پیشنهادی: gemini-3.5-flash)"; setText(prefs.getString("model", "gemini-3.5-flash")) }
+                  etTask = EditText(this).apply { hint = "تسک دقیق خود را بنویسید..."; minLines = 2 }
                   val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
                   btnRun = Button(this).apply { text = "شروع تسک"; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
                   btnStop = Button(this).apply { text = "توقف"; isEnabled = false; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) }
@@ -289,7 +331,7 @@ jobs:
 
                   btnRun.setOnClickListener {
                       val key = etKey.text.toString().trim()
-                      val model = etModel.text.toString().trim().ifEmpty { "gemini-2.5-flash-lite" }
+                      val model = etModel.text.toString().trim().ifEmpty { "gemini-3.5-flash" }
                       val task = etTask.text.toString().trim()
                       if (key.isEmpty() || task.isEmpty()) { log("⚠️ کلید API و متن تسک را وارد کنید."); return@setOnClickListener }
                       if (AgentAccessibilityService.instance == null) { log("⚠️ ابتدا سرویس Accessibility را فعال کنید."); return@setOnClickListener }
@@ -317,16 +359,38 @@ jobs:
                   latch.await(); return ok
               }
 
-              private fun callGemini(key: String, model: String, prompt: String): JSONObject {
-                  val sys = "You are an autonomous Android AI Agent controlling a smartphone. Return ONLY JSON: {thought, action (tap|long_press|type_text|submit|swipe|global_action|open_app|list_apps|wait|done|fail), element_id, x, y, text, direction, global_action, requires_confirmation, confirmation_message, final_message}. Note: open_app accepts Persian or English app names OR package names directly! Set requires_confirmation=true before sending messages, payments, deletions, or calls."
+              private fun callGemini(key: String, model: String, prompt: String, screenshotB64: String?): JSONObject {
+                  val sys = """
+                      You are an expert, deeply focused autonomous Android AI Agent.
+                      You receive BOTH a live screenshot of the phone AND a numbered list of UI elements with exact pixel centers @(x,y).
+
+                      CRITICAL DISCIPLINE:
+                      1. Break the user's goal into every required sub-step and track what is Completed vs Remaining in `plan_progress`.
+                      2. NEVER return action="done" early! Only return "done" when EVERY single part of the user's instruction is visibly verified complete on the current screen.
+                      3. If a popup, ad, permission dialog, or splash screen blocks the screen, dismiss it first and continue the goal.
+                      4. Prefer tapping by `element_id`. If an icon/button is visible in the screenshot but missing from the UI list, tap its exact pixel coordinates (x, y) within screen bounds (0..W, 0..H).
+                      5. After typing into a search box, call `submit` or tap the search button/suggestion to actually execute the search.
+                      6. `open_app` accepts Persian/English app names OR package names directly.
+                      7. Set `requires_confirmation=true` BEFORE sending messages, payments/purchases, deletions, or calls.
+
+                      Return ONLY valid JSON:
+                      {"plan_progress":"Completed: ... | Remaining: ...","thought":"...","action":"tap|long_press|type_text|submit|swipe|global_action|open_app|list_apps|wait|done|fail","element_id":null,"x":null,"y":null,"text":null,"direction":null,"global_action":null,"requires_confirmation":false,"confirmation_message":null,"final_message":null}
+                  """.trimIndent()
+
+                  val userParts = JSONArray()
+                  if (screenshotB64 != null) {
+                      userParts.put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", screenshotB64)))
+                  }
+                  userParts.put(JSONObject().put("text", prompt))
+
                   val body = JSONObject().apply {
                       put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
-                      put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
+                      put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", userParts)))
                       put("generationConfig", JSONObject().put("temperature", 0.1).put("responseMimeType", "application/json"))
                   }
                   repeat(3) { attempt ->
                       val conn = (URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$key").openConnection() as HttpURLConnection).apply {
-                          requestMethod = "POST"; doOutput = true; setRequestProperty("Content-Type", "application/json"); connectTimeout = 20000; readTimeout = 45000
+                          requestMethod = "POST"; doOutput = true; setRequestProperty("Content-Type", "application/json"); connectTimeout = 25000; readTimeout = 60000
                       }
                       conn.outputStream.use { it.write(body.toString().toByteArray()) }
                       val code = conn.responseCode
@@ -349,20 +413,30 @@ jobs:
                   try {
                       val svc = AgentAccessibilityService.instance ?: return
                       val history = mutableListOf<String>()
+                      var lastSig = ""
+                      var sameScreenCount = 0
                       log("🎯 شروع تسک ($model): $task")
-                      for (step in 1..20) {
+                      for (step in 1..35) {
                           if (!running.get()) break
-                          log("\n--- مرحله $step/20 ---")
+                          log("\n--- مرحله $step/35 ---")
                           val (w, h) = svc.screenSize()
+                          val pkg = svc.currentPackage()
                           val els = svc.captureElements()
+                          val shot = svc.captureScreenshotBase64()
                           val ui = els.joinToString("\n") { it.toLine() }
-                          val prompt = "Goal: $task\nScreen: ${w}x${h}\nHistory:\n${history.takeLast(8).joinToString("\n")}\nUI:\n$ui"
-                          val d = callGemini(key, model, prompt)
+                          val sig = "$pkg:${ui.hashCode()}"
+                          if (sig == lastSig) sameScreenCount++ else sameScreenCount = 0
+                          lastSig = sig
+                          val stuckHint = if (sameScreenCount >= 2) "\nWARNING: The screen has NOT changed for $sameScreenCount steps! Try a DIFFERENT element, tap exact screenshot coordinates, swipe/scroll, or press BACK." else ""
+                          val prompt = "User Goal: $task\nCurrent App Package: $pkg\nScreen Size: ${w}x${h} pixels\nScreenshot Attached: ${shot != null}\nHistory:\n${history.takeLast(12).joinToString("\n")}$stuckHint\n\nVisible UI Elements:\n$ui"
+                          val d = callGemini(key, model, prompt, shot)
                           val act = d.optString("action", "fail")
+                          val progress = d.optString("plan_progress", "")
+                          if (progress.isNotBlank()) log("📋 $progress")
                           log("🧠 ${d.optString("thought")}")
                           log("⚡ $act")
-                          if (act == "done") { log("✅ ${d.optString("final_message", "انجام شد.")}"); break }
-                          if (act == "fail") { log("❌ ${d.optString("final_message", "ناموفق.")}"); break }
+                          if (act == "done") { log("✅ ${d.optString("final_message", "تسک کامل شد.")}"); break }
+                          if (act == "fail") { log("❌ ${d.optString("final_message", "انجام تسک ممکن نبود.")}"); break }
                           if (d.optBoolean("requires_confirmation", false) && !confirm(d.optString("confirmation_message", act))) { log("⛔ لغو شد."); break }
                           val byId = els.associateBy { it.id }
                           val obs = when (act) {
@@ -377,7 +451,8 @@ jobs:
                               "wait" -> { Thread.sleep(2500); "Waited 2.5s" }
                               else -> "Unknown"
                           }
-                          log("📱 $obs"); history.add("Step $step: $act -> $obs"); Thread.sleep(3000)
+                          log("📱 $obs"); history.add("Step $step: $act -> $obs")
+                          Thread.sleep(if (act == "open_app") 3200 else 2500)
                       }
                   } catch (e: Exception) { log("❌ خطا: ${e.message}") }
                   finally { running.set(false); runOnUiThread { btnRun.isEnabled = true; btnStop.isEnabled = false } }
@@ -392,5 +467,5 @@ jobs:
         run: gradle assembleRelease --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: AndroidAIAgent-v1.2-APK
+          name: AndroidAIAgent-v1.3-APK
           path: app/build/outputs/apk/release/app-release.apk
