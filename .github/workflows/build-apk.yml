@@ -25,7 +25,7 @@ jobs:
               with open(p, "w", encoding="utf-8") as f:
                   f.write(c.lstrip("\n"))
 
-          w("AndroidAIAgentApp/settings.gradle.kts", """
+          w("AndroidAIAgentApp/settings.gradle.kts", r"""
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
           dependencyResolutionManagement {
               repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
@@ -35,14 +35,14 @@ jobs:
           include(":app")
           """)
 
-          w("AndroidAIAgentApp/build.gradle.kts", """
+          w("AndroidAIAgentApp/build.gradle.kts", r"""
           plugins {
               id("com.android.application") version "8.5.2" apply false
               id("org.jetbrains.kotlin.android") version "1.9.24" apply false
           }
           """)
 
-          w("AndroidAIAgentApp/app/build.gradle.kts", """
+          w("AndroidAIAgentApp/app/build.gradle.kts", r"""
           plugins {
               id("com.android.application")
               id("org.jetbrains.kotlin.android")
@@ -79,7 +79,7 @@ jobs:
           }
           """)
 
-          w("AndroidAIAgentApp/app/src/main/AndroidManifest.xml", """
+          w("AndroidAIAgentApp/app/src/main/AndroidManifest.xml", r"""
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
@@ -119,7 +119,7 @@ jobs:
           </manifest>
           """)
 
-          w("AndroidAIAgentApp/app/src/main/res/xml/accessibility_service_config.xml", """
+          w("AndroidAIAgentApp/app/src/main/res/xml/accessibility_service_config.xml", r"""
           <?xml version="1.0" encoding="utf-8"?>
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
               android:accessibilityEventTypes="typeAllMask"
@@ -131,7 +131,7 @@ jobs:
               android:notificationTimeout="100" />
           """)
 
-          w("AndroidAIAgentApp/app/src/main/java/com/aiagent/android/AgentBus.kt", """
+          w("AndroidAIAgentApp/app/src/main/java/com/aiagent/android/AgentBus.kt", r"""
           package com.aiagent.android
 
           import android.content.Context
@@ -202,7 +202,7 @@ jobs:
           }
           """)
 
-          w("AndroidAIAgentApp/app/src/main/java/com/aiagent/android/MainActivity.kt", """
+          w("AndroidAIAgentApp/app/src/main/java/com/aiagent/android/MainActivity.kt", r"""
           package com.aiagent.android
 
           import android.app.Activity
@@ -428,7 +428,7 @@ jobs:
           }
           """)
 
-          w("AndroidAIAgentApp/app/src/main/java/com/aiagent/android/AgentAccessibilityService.kt", """
+          w("AndroidAIAgentApp/app/src/main/java/com/aiagent/android/AgentAccessibilityService.kt", r"""
           package com.aiagent.android
 
           import android.accessibilityservice.AccessibilityService
