@@ -67,7 +67,8 @@ jobs:
           android.useAndroidX=true
           kotlin.code.style.official
           android.nonTransitiveRClass=true
-          ''')          write(os.path.join(ROOT, "app/build.gradle.kts"), r'''
+          ''')
+          write(os.path.join(ROOT, "app/build.gradle.kts"), r'''
           plugins {
               id("com.android.application")
               id("org.jetbrains.kotlin.android")
