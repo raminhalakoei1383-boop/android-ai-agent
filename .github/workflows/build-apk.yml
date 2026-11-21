@@ -1,4 +1,4 @@
-name: Build Android APK v1.6
+name: Build Android APK v2.0
 
 on:
   push:
@@ -21,7 +21,7 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Generate Android AI Agent v1.6 Project
+      - name: Generate Android AI Agent v2.0 (Glass + Gemini 4 Hydrogen)
         run: |
           python3 - << 'PYEOF'
           import os
@@ -65,11 +65,9 @@ jobs:
           write(os.path.join(ROOT, "gradle.properties"), r'''
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
-          kotlin.code.style=official
+          kotlin.code.style.official
           android.nonTransitiveRClass=true
-          ''')
-
-          write(os.path.join(ROOT, "app/build.gradle.kts"), r'''
+          ''')          write(os.path.join(ROOT, "app/build.gradle.kts"), r'''
           plugins {
               id("com.android.application")
               id("org.jetbrains.kotlin.android")
@@ -83,8 +81,8 @@ jobs:
                   applicationId = "com.aiagent.android"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 16
-                  versionName = "1.6"
+                  versionCode = 20
+                  versionName = "2.0"
               }
 
               signingConfigs {
@@ -127,6 +125,10 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
               <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
               <queries>
                   <intent>
@@ -150,6 +152,16 @@ jobs:
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                   </activity>
+
+                  <service
+                      android:name=".KeepAliveService"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse"
+                      android:stopWithTask="false">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="Keep user-enabled accessibility automation service active in background" />
+                  </service>
 
                   <service
                       android:name=".AgentAccessibilityService"
@@ -184,8 +196,109 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <string name="app_name">Android AI Agent</string>
-              <string name="accessibility_service_description">اجازه به ایجنت هوشمند برای خواندن صفحه، باز کردن برنامه‌ها، لمس دکمه‌ها و تایپ متن بر اساس دستورات شما.</string>
+              <string name="accessibility_service_description">اجازه به ایجنت هوشمند (Gemini 4 Hydrogen) برای خواندن صفحه، باز کردن برنامه‌ها، لمس دکمه‌ها و اجرای دقیق دستورات شما.</string>
           </resources>
+          ''')
+
+          write(os.path.join(PKG_DIR, "KeepAliveService.kt"), r'''
+          package com.aiagent.android
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.os.Build
+          import android.os.IBinder
+          import androidx.core.app.NotificationCompat
+
+          class KeepAliveService : Service() {
+
+              companion object {
+                  private const val CHANNEL_ID = "agent_keep_alive_channel"
+                  private const val NOTIF_ID = 2048
+
+                  fun start(context: Context) {
+                      try {
+                          val intent = Intent(context, KeepAliveService::class.java)
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                              context.startForegroundService(intent)
+                          } else {
+                              context.startService(intent)
+                          }
+                      } catch (_: Exception) {
+                      }
+                  }
+
+                  fun stop(context: Context) {
+                      try {
+                          context.stopService(Intent(context, KeepAliveService::class.java))
+                      } catch (_: Exception) {
+                      }
+                  }
+              }
+
+              override fun onCreate() {
+                  super.onCreate()
+                  createChannel()
+                  startInForeground()
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  startInForeground()
+                  return START_STICKY
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              private fun createChannel() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val nm = getSystemService(NotificationManager::class.java)
+                      val channel = NotificationChannel(
+                          CHANNEL_ID,
+                          "حفظ اتصال ایجنت هوشمند",
+                          NotificationManager.IMPORTANCE_LOW
+                      ).apply {
+                          description = "برای جلوگیری از قطع خودکار سرویس دسترس‌پذیری در پس‌زمینه"
+                          setShowBadge(false)
+                      }
+                      nm?.createNotificationChannel(channel)
+                  }
+              }
+
+              private fun startInForeground() {
+                  try {
+                      val openIntent = Intent(this, MainActivity::class.java).apply {
+                          flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                      }
+                      val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                          PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                      } else {
+                          PendingIntent.FLAG_UPDATE_CURRENT
+                      }
+                      val pi = PendingIntent.getActivity(this, 0, openIntent, pendingFlags)
+                      val notif: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                          .setSmallIcon(android.R.drawable.ic_menu_compass)
+                          .setContentTitle("ایجنت هوشمند فعال است")
+                          .setContentText("سرویس دسترس‌پذیری متصل و آماده اجرای دستورات است")
+                          .setOngoing(true)
+                          .setSilent(true)
+                          .setPriority(NotificationCompat.PRIORITY_LOW)
+                          .setContentIntent(pi)
+                          .build()
+
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                          startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                      } else {
+                          startForeground(NOTIF_ID, notif)
+                      }
+                  } catch (_: Exception) {
+                  }
+              }
+          }
           ''')
 
           write(os.path.join(PKG_DIR, "AccessibilityHelper.kt"), r'''
@@ -194,6 +307,7 @@ jobs:
           import android.accessibilityservice.AccessibilityServiceInfo
           import android.content.ComponentName
           import android.content.Context
+          import android.os.PowerManager
           import android.provider.Settings
           import android.view.accessibility.AccessibilityManager
 
@@ -206,6 +320,15 @@ jobs:
           object AccessibilityHelper {
 
               fun isConnected(): Boolean = AgentAccessibilityService.instance != null
+
+              fun isIgnoringBatteryOptimizations(context: Context): Boolean {
+                  return try {
+                      val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                      pm?.isIgnoringBatteryOptimizations(context.packageName) == true
+                  } catch (_: Exception) {
+                      false
+                  }
+              }
 
               fun isEnabledInSettings(context: Context): Boolean {
                   if (isConnected()) return true
@@ -270,6 +393,7 @@ jobs:
           import android.graphics.Bitmap
           import android.graphics.Path
           import android.graphics.Rect
+          import android.net.Uri
           import android.os.Build
           import android.os.Bundle
           import android.os.Handler
@@ -420,6 +544,7 @@ jobs:
               override fun onServiceConnected() {
                   super.onServiceConnected()
                   instance = this
+                  KeepAliveService.start(applicationContext)
                   notifyListeners()
               }
 
@@ -440,6 +565,7 @@ jobs:
               override fun onUnbind(intent: Intent?): Boolean {
                   if (instance === this) {
                       instance = null
+                      KeepAliveService.stop(applicationContext)
                       notifyListeners()
                   }
                   return super.onUnbind(intent)
@@ -448,6 +574,7 @@ jobs:
               override fun onDestroy() {
                   if (instance === this) {
                       instance = null
+                      KeepAliveService.stop(applicationContext)
                       notifyListeners()
                   }
                   super.onDestroy()
@@ -496,7 +623,7 @@ jobs:
                   return apps.sortedBy { it.label.lowercase() }
               }
 
-              fun buildRelevantAppsSummary(userGoal: String, maxApps: Int = 55): String {
+              fun buildRelevantAppsSummary(userGoal: String, maxApps: Int = 60): String {
                   val all = getInstalledLaunchableApps()
                   if (all.isEmpty()) return "هیچ برنامه قابل اجرایی یافت نشد."
                   val normGoal = normalizeName(userGoal)
@@ -519,6 +646,22 @@ jobs:
 
                   val combined = (prioritized + others).take(maxApps)
                   return combined.joinToString("\n") { "- ${it.label} (${it.packageName})" }
+              }
+
+              suspend fun openUrl(rawUrl: String): ActionResult {
+                  val url = rawUrl.trim().let {
+                      if (it.startsWith("http://") || it.startsWith("https://")) it else "https://$it"
+                  }
+                  return try {
+                      val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      }
+                      startActivity(intent)
+                      delay(1200)
+                      ActionResult(true, "آدرس $url باز شد. صفحه فعلی: ${getForegroundPackage()}")
+                  } catch (e: Exception) {
+                      ActionResult(false, "خطا در باز کردن آدرس $url: ${e.message}")
+                  }
               }
 
               suspend fun openApp(query: String): ActionResult {
@@ -586,7 +729,7 @@ jobs:
                       startActivity(launchIntent)
                       var switched = false
                       var fg = getForegroundPackage()
-                      for (i in 0 until 8) {
+                      for (i in 0 until 10) {
                           delay(250)
                           fg = getForegroundPackage()
                           if (fg == targetPkg || (fg.isNotBlank() && fg != packageName)) {
@@ -595,7 +738,7 @@ jobs:
                           }
                       }
                       if (switched) {
-                          ActionResult(true, "برنامه «$targetLabel» ($targetPkg) با موفقیت باز شد. صفحه فعلی: $fg")
+                          ActionResult(true, "برنامه «$targetLabel» ($targetPkg) باز شد. صفحه فعلی: $fg")
                       } else {
                           ActionResult(
                               false,
@@ -627,10 +770,10 @@ jobs:
                           if (el.scrollable) append("S")
                       }
                       val label = buildString {
-                          if (el.text.isNotBlank()) append("t=\"${el.text.take(65)}\"")
+                          if (el.text.isNotBlank()) append("t=\"${el.text.take(70)}\"")
                           if (el.desc.isNotBlank() && el.desc != el.text) {
                               if (isNotEmpty()) append(" ")
-                              append("d=\"${el.desc.take(55)}\"")
+                              append("d=\"${el.desc.take(60)}\"")
                           }
                           if (el.viewId.isNotBlank()) {
                               if (isNotEmpty()) append(" ")
@@ -652,7 +795,7 @@ jobs:
               }
 
               private fun traverse(node: AccessibilityNodeInfo, out: MutableList<UiElement>, depth: Int) {
-                  if (out.size >= 85 || depth > 28) return
+                  if (out.size >= 90 || depth > 28) return
                   if (!node.isVisibleToUser) return
 
                   val text = node.text?.toString()?.trim().orEmpty()
@@ -711,7 +854,7 @@ jobs:
                   if (fg == packageName) {
                       return ActionResult(
                           false,
-                          "مسدود شد: صفحه فعلی خود اپلیکیشن ایجنت است. ابتدا با open_app یا home از برنامه ایجنت خارج شو."
+                          "مسدود شد: صفحه فعلی خود اپلیکیشن ایجنت است. ابتدا با open_app یا open_url یا home از برنامه ایجنت خارج شو."
                       )
                   }
 
@@ -730,7 +873,7 @@ jobs:
                       }
                       val ok = tapAt(el.bounds.centerX().toFloat(), el.bounds.centerY().toFloat())
                       return if (ok) {
-                          ActionResult(true, "لمس مختصات [$index] @(${el.bounds.centerX()},${el.bounds.centerY()})")
+                          ActionResult(true, "لمس [$index] @(${el.bounds.centerX()},${el.bounds.centerY()})")
                       } else {
                           ActionResult(false, "کلیک روی [$index] ناموفق بود.")
                       }
@@ -777,7 +920,7 @@ jobs:
                       val el = lastElements[index]
                       targetNode = findNodeByBounds(rootInActiveWindow, el.bounds)
                       tapAt(el.bounds.centerX().toFloat(), el.bounds.centerY().toFloat())
-                      delay(250)
+                      delay(280)
                   }
 
                   if (targetNode == null) {
@@ -789,7 +932,7 @@ jobs:
                       if (editable != null) {
                           targetNode = findNodeByBounds(rootInActiveWindow, editable.bounds)
                           tapAt(editable.bounds.centerX().toFloat(), editable.bounds.centerY().toFloat())
-                          delay(250)
+                          delay(280)
                       }
                   }
 
@@ -807,19 +950,19 @@ jobs:
                       try {
                           val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                           cm.setPrimaryClip(ClipData.newPlainText("agent_input", text))
-                          delay(120)
+                          delay(150)
                           typed = targetNode.performAction(AccessibilityNodeInfo.ACTION_PASTE)
                       } catch (_: Exception) {
                       }
                   }
 
                   if (typed && submit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                      delay(200)
+                      delay(220)
                       targetNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
                   }
 
                   return if (typed) {
-                      ActionResult(true, "متن «$text» تایپ شد${if (submit) " و ارسال شد" else ""}.")
+                      ActionResult(true, "متن «$text» تایپ شد${if (submit) " و کلید Enter زده شد" else ""}.")
                   } else {
                       ActionResult(false, "تایپ متن در این کادر ناموفق بود.")
                   }
@@ -840,7 +983,7 @@ jobs:
                       "right" -> listOf(w * 0.20f, h * 0.5f, w * 0.80f, h * 0.5f)
                       else -> listOf(w * 0.5f, h * 0.75f, w * 0.5f, h * 0.25f)
                   }
-                  val ok = swipe(x1, y1, x2, y2, 320L)
+                  val ok = swipe(x1, y1, x2, y2, 340L)
                   return if (ok) ActionResult(true, "اسکرول به سمت $direction انجام شد.")
                   else ActionResult(false, "اسکرول ناموفق بود.")
               }
@@ -860,7 +1003,7 @@ jobs:
                   return if (ok) ActionResult(true, "برنامه‌های اخیر باز شد.") else ActionResult(false, "باز کردن برنامه‌های اخیر ناموفق بود.")
               }
 
-              private suspend fun tapAt(x: Float, y: Float): Boolean = gestureTap(x, y, 70L)
+              private suspend fun tapAt(x: Float, y: Float): Boolean = gestureTap(x, y, 75L)
 
               private suspend fun gestureTap(x: Float, y: Float, durationMs: Long): Boolean {
                   return suspendCancellableCoroutine { cont ->
@@ -919,11 +1062,11 @@ jobs:
                                           }
                                           val soft = hw.copy(Bitmap.Config.ARGB_8888, false)
                                           hw.recycle()
-                                          val scale = 540f / maxOf(soft.width, 1)
+                                          val scale = 480f / maxOf(soft.width, 1)
                                           val scaled = if (scale < 1f) {
                                               Bitmap.createScaledBitmap(
                                                   soft,
-                                                  540,
+                                                  480,
                                                   (soft.height * scale).toInt().coerceAtLeast(1),
                                                   true
                                               ).also { soft.recycle() }
@@ -931,7 +1074,7 @@ jobs:
                                               soft
                                           }
                                           val out = ByteArrayOutputStream()
-                                          scaled.compress(Bitmap.CompressFormat.JPEG, 55, out)
+                                          scaled.compress(Bitmap.CompressFormat.JPEG, 48, out)
                                           scaled.recycle()
                                           val b64 = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
                                           if (cont.isActive) cont.resume(b64)
@@ -967,6 +1110,11 @@ jobs:
           import java.net.HttpURLConnection
           import java.net.URL
 
+          data class ChecklistItem(
+              val task: String,
+              val done: Boolean
+          )
+
           data class PlannedAction(
               val type: String,
               val index: Int? = null,
@@ -976,13 +1124,16 @@ jobs:
               val submit: Boolean = false,
               val direction: String? = null,
               val app: String? = null,
+              val url: String? = null,
               val ms: Long? = null
           )
 
           data class AgentPlan(
-              val thought: String,
-              val remaining: String,
+              val understanding: String,
+              val checklist: List<ChecklistItem>,
+              val currentSubtask: String,
               val status: String,
+              val isPureQuestion: Boolean,
               val reply: String,
               val actions: List<PlannedAction>
           )
@@ -992,22 +1143,28 @@ jobs:
               private val model: String
           ) {
               private val systemPrompt = """
-                  تو یک ایجنت هوشمند، دقیق، سریع و کاملاً صادق برای کنترل گوشی اندروید هستی.
-                  پاسخ تو باید فقط و فقط یک آبجکت JSON معتبر (بدون متن اضافه یا Markdown) با این ساختار باشد:
+                  تو یک ایجنت هوشمند، دقیق، متمرکز و کاملاً صادق برای کنترل واقعی گوشی اندروید با مدل Gemini 4 Hydrogen هستی.
+                  هدف اصلی تو این است که منظور واقعی و کل پرامپت کاربر را کامل بفهمی، هیچ بخشی از آن را نادیده نگیری، وسط کار منحرف نشوی و کار واقعی را روی گوشی تا آخرین مرحله انجام دهی (نه اینکه فقط پیام متنی بدهی!).
+
+                  پاسخ تو باید فقط و فقط یک آبجکت JSON معتبر با این ساختار دقیق باشد:
                   {
-                    "thought": "تحلیل کوتاه قدم فعلی به فارسی",
-                    "remaining": "بخش‌های باقی‌مانده از دستور کاربر (یا خالی اگر همه انجام شده)",
-                    "status": "continue" | "done" | "fail" | "need_screenshot",
-                    "reply": "پیام کوتاه فارسی برای کاربر در حالت done یا fail",
+                    "understanding": "برداشت دقیق از کل خواسته کاربر در یک جمله فارسی",
+                    "checklist": [
+                      {"task": "زیرکار اول", "done": true},
+                      {"task": "زیرکار دوم", "done": false}
+                    ],
+                    "current_subtask": "دقیقاً کدام زیرکار را الان انجام می‌دهی",
+                    "status": "continue" | "done" | "fail",
+                    "is_pure_question": false,
+                    "reply": "پیام نهایی فارسی در حالت done یا fail",
                     "actions": [
-                      {"type": "open_app", "app": "نام یا پکیج برنامه"},
-                      {"type": "click", "index": 5},
-                      {"type": "type", "index": 5, "text": "متن", "submit": true}
+                      {"type": "open_app", "app": "نام یا packageName"}
                     ]
                   }
 
                   اکشن‌های مجاز:
                   - open_app: {"type":"open_app","app":"نام یا packageName از لیست برنامه‌های نصب‌شده"}
+                  - open_url: {"type":"open_url","url":"https://..."}
                   - click: {"type":"click","index":N} یا {"type":"click","x":X,"y":Y}
                   - long_click: {"type":"long_click","index":N}
                   - type: {"type":"type","index":N,"text":"متن","submit":true/false}
@@ -1017,12 +1174,13 @@ jobs:
                   - recents: {"type":"recents"}
                   - wait: {"type":"wait","ms":1000}
 
-                  قوانین حیاتی و بدون استثنا:
-                  1. قانون مطلق صداقت: هرگز ادعا نکن برنامه‌ای باز شده یا کاری انجام شده مگر اینکه در foreground_package و ui_nodes فعلی واقعاً آن را ببینی. اگر open_app خطا داد یا برنامه نصب نبود، صادقانه status را "fail" بگذار و به فارسی دلیل واقعی را بگو.
-                  2. اگر foreground_package برابر com.aiagent.android است، یعنی هنوز داخل خود چت ایجنت هستی؛ هرگز روی المان‌های خود ایجنت click یا type نکن و اول با open_app (یا home) برنامه مقصد را باز کن.
-                  3. برای سرعت بالا می‌توانی تا ۳ اکشن مطمئن پشت‌سرهم بدهی (مثلاً click کادر جستجو و سپس type با submit:true).
-                  4. تا زمانی که همه بخش‌های دستور کاربر واقعاً روی صفحه تکمیل نشده‌اند، status را "done" نگذار.
-                  5. اگر دکمه‌ها بی‌متن بودند یا صفحه گیج‌کننده بود، status را "need_screenshot" بگذار تا تصویر صفحه برایت ارسال شود.
+                  قوانین طلایی و بدون استثنا:
+                  1. در مرحله ۱ حتماً کل پرامپت کاربر را به زیرکارهای دقیق و کامل در checklist بشکن تا هیچ بخشی از دستور فراموش یا حذف نشود. در مراحل بعدی همین checklist را به‌روز نگه دار و فقط زیرکارهایی را done:true کن که نتیجه واقعی آن‌ها را در صفحه فعلی (اسکرین‌شات و ui_nodes) می‌بینی.
+                  2. هرگز وسط کار به سمت کار بی‌ربط نرو. در هر قدم فقط روی اولین زیرکارِ done:false تمرکز کن.
+                  3. هرگز به جای انجام کار واقعی روی گوشی، فقط پیام نده! فقط وقتی is_pure_question را true بگذار که کاربر صراحتاً یک سوال عمومی پرسیده و هیچ کاری روی گوشی نخواسته است.
+                  4. اگر foreground_package برابر com.aiagent.android است، هنوز داخل چت خود ایجنت هستی؛ هرگز روی المان‌های خود ایجنت click یا type نکن و اول با open_app یا open_url یا home وارد برنامه مقصد شو.
+                  5. در هر پاسخ حداکثر ۱ تا ۲ اکشن مطمئن بده. اگر اکشن open_app، scroll، back یا home می‌دهی، فقط همان ۱ اکشن را بده تا صفحه جدید را ببینی و اشتباه کلیک نکنی.
+                  6. قانون مطلق صداقت: تا وقتی همه موارد checklist واقعاً روی صفحه انجام نشده و done:true نشده‌اند، status را "done" نگذار. اگر برنامه‌ای نصب نیست یا کاری غیرممکن است، صادقانه status را "fail" بگذار و دلیل واقعی را به فارسی بگو.
               """.trimIndent()
 
               suspend fun planNextStep(
@@ -1030,24 +1188,36 @@ jobs:
                   step: Int,
                   maxSteps: Int,
                   snapshot: ScreenSnapshot,
+                  checklist: List<ChecklistItem>,
                   history: List<String>,
                   installedAppsSummary: String?,
                   screenshotBase64: String?
               ): AgentPlan = withContext(Dispatchers.IO) {
                   val promptBuilder = StringBuilder()
-                  promptBuilder.append("دستور کاربر: $userGoal\n")
+                  promptBuilder.append("دستور کامل کاربر (باید ۱۰۰٪ و بدون جا انداختن هیچ بخشی انجام شود):\n$userGoal\n\n")
                   promptBuilder.append("مرحله: $step از $maxSteps\n")
                   promptBuilder.append("foreground_package: ${snapshot.foregroundPackage}\n")
-                  if (!installedAppsSummary.isNullOrBlank()) {
-                      promptBuilder.append("\nبرنامه‌های نصب‌شده روی گوشی:\n$installedAppsSummary\n")
+
+                  if (checklist.isNotEmpty()) {
+                      promptBuilder.append("\nچک‌لیست فعلی زیرکارها:\n")
+                      checklist.forEachIndexed { idx, item ->
+                          val mark = if (item.done) "[x]" else "[ ]"
+                          promptBuilder.append("${idx + 1}. $mark ${item.task}\n")
+                      }
                   }
+
+                  if (!installedAppsSummary.isNullOrBlank()) {
+                      promptBuilder.append("\nبرنامه‌های واقعی نصب‌شده روی گوشی:\n$installedAppsSummary\n")
+                  }
+
                   if (history.isNotEmpty()) {
                       promptBuilder.append("\nگزارش مراحل قبلی:\n")
-                      promptBuilder.append(history.takeLast(8).joinToString("\n"))
+                      promptBuilder.append(history.takeLast(10).joinToString("\n"))
                       promptBuilder.append("\n")
                   }
+
                   promptBuilder.append("\nالمان‌های فعلی صفحه (ui_nodes):\n")
-                  promptBuilder.append(snapshot.compactTree.take(7000))
+                  promptBuilder.append(snapshot.compactTree.take(7500))
 
                   val parts = JSONArray().apply {
                       put(JSONObject().put("text", promptBuilder.toString()))
@@ -1075,7 +1245,6 @@ jobs:
                       .put(
                           "generationConfig",
                           JSONObject()
-                              .put("temperature", 0.1)
                               .put("responseMimeType", "application/json")
                       )
 
@@ -1087,8 +1256,8 @@ jobs:
                           val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                               requestMethod = "POST"
                               setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                              connectTimeout = 20000
-                              readTimeout = 35000
+                              connectTimeout = 25000
+                              readTimeout = 45000
                               doOutput = true
                           }
                           OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
@@ -1123,15 +1292,31 @@ jobs:
 
               private fun parsePlan(rawResp: String): AgentPlan {
                   val root = JSONObject(rawResp)
-                  val text = root.getJSONArray("candidates")
+                  val parts = root.getJSONArray("candidates")
                       .getJSONObject(0)
                       .getJSONObject("content")
                       .getJSONArray("parts")
-                      .getJSONObject(0)
-                      .getString("text")
-                      .trim()
 
-                  val cleaned = text
+                  var chosenText = ""
+                  for (i in 0 until parts.length()) {
+                      val p = parts.optJSONObject(i) ?: continue
+                      val t = p.optString("text", "")
+                      if (t.isNotBlank() && !p.optBoolean("thought", false)) {
+                          chosenText = t.trim()
+                          break
+                      }
+                  }
+                  if (chosenText.isBlank()) {
+                      for (i in parts.length() - 1 downTo 0) {
+                          val t = parts.optJSONObject(i)?.optString("text", "").orEmpty()
+                          if (t.isNotBlank()) {
+                              chosenText = t.trim()
+                              break
+                          }
+                      }
+                  }
+
+                  val cleaned = chosenText
                       .removePrefix("```json")
                       .removePrefix("```")
                       .removeSuffix("```")
@@ -1144,9 +1329,22 @@ jobs:
                   } else cleaned
 
                   val obj = JSONObject(jsonStr)
+
+                  val checklist = mutableListOf<ChecklistItem>()
+                  val clArr = obj.optJSONArray("checklist")
+                  if (clArr != null) {
+                      for (i in 0 until clArr.length()) {
+                          val c = clArr.optJSONObject(i) ?: continue
+                          val taskStr = c.optString("task", "").trim()
+                          if (taskStr.isNotBlank()) {
+                              checklist.add(ChecklistItem(taskStr, c.optBoolean("done", false)))
+                          }
+                      }
+                  }
+
                   val actionsArr = obj.optJSONArray("actions") ?: JSONArray()
                   val actions = mutableListOf<PlannedAction>()
-                  for (i in 0 until minOf(actionsArr.length(), 3)) {
+                  for (i in 0 until minOf(actionsArr.length(), 2)) {
                       val a = actionsArr.optJSONObject(i) ?: continue
                       actions.add(
                           PlannedAction(
@@ -1158,15 +1356,18 @@ jobs:
                               submit = a.optBoolean("submit", false),
                               direction = if (a.has("direction") && !a.isNull("direction")) a.optString("direction") else null,
                               app = if (a.has("app") && !a.isNull("app")) a.optString("app") else null,
+                              url = if (a.has("url") && !a.isNull("url")) a.optString("url") else null,
                               ms = if (a.has("ms") && !a.isNull("ms")) a.optLong("ms") else null
                           )
                       )
                   }
 
                   return AgentPlan(
-                      thought = obj.optString("thought", ""),
-                      remaining = obj.optString("remaining", ""),
+                      understanding = obj.optString("understanding", ""),
+                      checklist = checklist,
+                      currentSubtask = obj.optString("current_subtask", ""),
                       status = obj.optString("status", "continue").lowercase(),
+                      isPureQuestion = obj.optBoolean("is_pure_question", false),
                       reply = obj.optString("reply", ""),
                       actions = actions
                   )
@@ -1201,19 +1402,20 @@ jobs:
                   if (service == null) {
                       return when (AccessibilityHelper.getState(context)) {
                           ServiceState.ENABLED_BUT_SUSPENDED ->
-                              "سرویس دسترسی در تنظیمات روشن است، اما سیستم گوشی (شیائومی) اتصالش را در پس‌زمینه معلق کرده است. دکمه «اتصال مجدد» بالای صفحه را بزن، کلید بالایی «استفاده از Android AI Agent Service» را یک‌بار خاموش و دوباره روشن کن (و از تنظیمات برنامه، Autostart و باتری «بدون محدودیت» را فعال کن)."
+                              "سرویس دسترسی در تنظیمات روشن است، اما سیستم گوشی اتصالش را در پس‌زمینه معلق کرده است. دکمه «اتصال مجدد» را بزن، کلید بالایی Android AI Agent Service را یک‌بار خاموش و روشن کن و از تنظیمات، گزینه «جلوگیری از قطع خودکار» را فعال کن."
                           else ->
-                              "سرویس دسترسی (Accessibility) خاموش است. روی دکمه «روشن کردن» بالای صفحه بزن و کلید بالایی Android AI Agent Service را روشن کن."
+                              "سرویس دسترسی (Accessibility) خاموش است. دکمه «روشن کردن» بالای صفحه را بزن و کلید بالایی Android AI Agent Service را فعال کن."
                       }
                   }
 
                   val client = GeminiClient(apiKey, model)
                   val history = mutableListOf<String>()
+                  var checklist = listOf<ChecklistItem>()
                   val appsSummary = service.buildRelevantAppsSummary(userGoal)
                   var lastHash = 0
                   var sameHashCount = 0
-                  var forceScreenshot = false
-                  var rejectedEarlyDone = false
+                  var realActionsDone = 0
+                  var rejectedDoneCount = 0
                   var lastActionFailed = false
 
                   for (step in 1..maxSteps) {
@@ -1225,13 +1427,13 @@ jobs:
                           lastHash = snapshot.hash
                       }
 
-                      val needVision = forceScreenshot ||
-                          sameHashCount >= 2 ||
-                          (snapshot.elements.size < 4 && snapshot.foregroundPackage != context.packageName)
-                      forceScreenshot = false
+                      val inExternalApp = snapshot.foregroundPackage.isNotBlank() &&
+                          snapshot.foregroundPackage != context.packageName
+                      val screenshotB64 = if (inExternalApp || sameHashCount >= 2) {
+                          service.captureScreenshotBase64()
+                      } else null
 
-                      val screenshotB64 = if (needVision) service.captureScreenshotBase64() else null
-                      val appsForStep = if (step == 1 || lastActionFailed) appsSummary else null
+                      val appsForStep = if (step == 1 || lastActionFailed || !inExternalApp) appsSummary else null
 
                       val plan = try {
                           client.planNextStep(
@@ -1239,6 +1441,7 @@ jobs:
                               step = step,
                               maxSteps = maxSteps,
                               snapshot = snapshot,
+                              checklist = checklist,
                               history = history,
                               installedAppsSummary = appsForStep,
                               screenshotBase64 = screenshotB64
@@ -1249,46 +1452,55 @@ jobs:
                           return "خطا در مرحله $step: ${e.message}"
                       }
 
-                      if (plan.status == "need_screenshot") {
-                          forceScreenshot = true
-                          history.add("مرحله $step: درخواست تصویر صفحه")
-                          continue
+                      if (plan.checklist.isNotEmpty()) {
+                          checklist = plan.checklist
+                      }
+
+                      if (step == 1 && checklist.isNotEmpty()) {
+                          val planPreview = checklist.mapIndexed { i, c -> "${i + 1}. ${c.task}" }.joinToString("\n")
+                          onUpdate("📋 برنامه دقیق اجرا:\n$planPreview")
                       }
 
                       if (plan.status == "fail") {
-                          return plan.reply.ifBlank { plan.thought.ifBlank { "انجام این دستور ممکن نشد." } }
+                          return plan.reply.ifBlank { plan.understanding.ifBlank { "انجام این دستور ممکن نشد." } }
                       }
 
                       if (plan.status == "done") {
-                          val stillInAgentOnStep1 = (step == 1 && snapshot.foregroundPackage == context.packageName)
-                          val hasRemaining = plan.remaining.isNotBlank() &&
-                              !plan.remaining.equals("none", true) &&
-                              !plan.remaining.equals("هیچ", true) &&
-                              !plan.remaining.equals("ندارد", true)
+                          val pendingItems = checklist.filter { !it.done }
+                          val noRealWorkOnAction = (realActionsDone == 0 && !plan.isPureQuestion)
 
-                          if ((stillInAgentOnStep1 || hasRemaining || lastActionFailed) && !rejectedEarlyDone) {
-                              rejectedEarlyDone = true
-                              history.add("مرحله $step: توقف زودهنگام رد شد؛ هنوز روی ${snapshot.foregroundPackage} هستی یا کار کامل نشده. باید اقدام واقعی انجام دهی یا صادقانه fail بدهی.")
+                          if ((pendingItems.isNotEmpty() || noRealWorkOnAction || lastActionFailed) && rejectedDoneCount < 2) {
+                              rejectedDoneCount++
+                              val reason = when {
+                                  pendingItems.isNotEmpty() ->
+                                      "این زیرکارها هنوز انجام نشده‌اند: ${pendingItems.joinToString(" ، ") { it.task }}"
+                                  noRealWorkOnAction ->
+                                      "هنوز هیچ اقدام واقعی روی گوشی انجام نداده‌ای! باید کار واقعی را اجرا کنی نه فقط پیام بدهی."
+                                  else ->
+                                      "اکشن قبلی ناموفق بود؛ نمی‌توانی بدون انجام واقعی done بدهی."
+                              }
+                              history.add("مرحله $step: توقف زودهنگام رد شد — $reason")
                               continue
                           }
-                          return plan.reply.ifBlank { "دستور با موفقیت انجام شد." }
+                          return plan.reply.ifBlank { "✅ همه مراحل دستور با موفقیت انجام شد." }
                       }
 
                       if (plan.actions.isEmpty()) {
-                          history.add("مرحله $step: هیچ اکشنی برگردانده نشد.")
-                          forceScreenshot = true
-                          delay(400)
+                          history.add("مرحله $step: هیچ اکشنی برگردانده نشد؛ باید اقدام واقعی بدهی.")
+                          delay(350)
                           continue
                       }
 
-                      if (plan.thought.isNotBlank()) {
-                          onUpdate("مرحله $step: ${plan.thought}")
+                      val label = plan.currentSubtask.ifBlank { plan.understanding }
+                      if (label.isNotBlank()) {
+                          onUpdate("⚡ مرحله $step: $label")
                       }
 
                       lastActionFailed = false
                       for (act in plan.actions) {
                           val res = when (act.type) {
                               "open_app" -> service.openApp(act.app.orEmpty())
+                              "open_url" -> service.openUrl(act.url.orEmpty())
                               "click" -> service.clickElement(act.index, act.x, act.y)
                               "long_click" -> service.longClickElement(act.index, act.x, act.y)
                               "type" -> service.typeText(act.index, act.text.orEmpty(), act.submit)
@@ -1304,16 +1516,120 @@ jobs:
                           }
 
                           history.add("مرحله $step [${act.type}]: ${if (res.success) "موفق" else "ناموفق"} - ${res.message}")
-                          if (!res.success) {
+                          if (res.success) {
+                              realActionsDone++
+                          } else {
                               lastActionFailed = true
                               onUpdate("⚠️ ${res.message}")
                               break
                           }
-                          delay(if (act.type == "open_app") 500L else 380L)
+
+                          if (act.type == "open_app" || act.type == "open_url" || act.type == "scroll" || act.type == "back" || act.type == "home") {
+                              delay(550L)
+                              break
+                          } else {
+                              delay(400L)
+                          }
                       }
                   }
 
-                  return "حداکثر تعداد مراحل ($maxSteps) به پایان رسید و کار هنوز کامل نشده است."
+                  return "حداکثر تعداد مراحل ($maxSteps) به پایان رسید و بخشی از کار هنوز باقی مانده است."
+              }
+          }
+          ''')
+
+          write(os.path.join(PKG_DIR, "GlassUi.kt"), r'''
+          package com.aiagent.android
+
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.LinearGradient
+          import android.graphics.Paint
+          import android.graphics.RadialGradient
+          import android.graphics.Shader
+          import android.graphics.drawable.GradientDrawable
+          import android.view.View
+
+          class GlassAuroraBackgroundView(context: Context) : View(context) {
+              private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val orb1Paint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val orb2Paint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val orb3Paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+              override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+                  super.onSizeChanged(w, h, oldw, oldh)
+                  if (w <= 0 || h <= 0) return
+                  bgPaint.shader = LinearGradient(
+                      0f, 0f, w.toFloat(), h.toFloat(),
+                      intArrayOf(
+                          Color.parseColor("#060918"),
+                          Color.parseColor("#0F1733"),
+                          Color.parseColor("#1A1038"),
+                          Color.parseColor("#091124")
+                      ),
+                      floatArrayOf(0f, 0.35f, 0.72f, 1f),
+                      Shader.TileMode.CLAMP
+                  )
+                  orb1Paint.shader = RadialGradient(
+                      w * 0.15f, h * 0.12f, w * 0.65f,
+                      Color.parseColor("#5538BDF8"),
+                      Color.TRANSPARENT,
+                      Shader.TileMode.CLAMP
+                  )
+                  orb2Paint.shader = RadialGradient(
+                      w * 0.88f, h * 0.42f, w * 0.70f,
+                      Color.parseColor("#558B5CF6"),
+                      Color.TRANSPARENT,
+                      Shader.TileMode.CLAMP
+                  )
+                  orb3Paint.shader = RadialGradient(
+                      w * 0.25f, h * 0.88f, w * 0.65f,
+                      Color.parseColor("#44EC4899"),
+                      Color.TRANSPARENT,
+                      Shader.TileMode.CLAMP
+                  )
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
+                  canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), orb1Paint)
+                  canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), orb2Paint)
+                  canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), orb3Paint)
+              }
+          }
+
+          object GlassStyle {
+              fun dp(context: Context, v: Int): Int = (v * context.resources.displayMetrics.density).toInt()
+
+              fun glassPanel(
+                  context: Context,
+                  fillHex: String = "#22FFFFFF",
+                  strokeHex: String = "#48FFFFFF",
+                  radiusDp: Int = 20,
+                  strokeWidthDp: Int = 1
+              ): GradientDrawable {
+                  return GradientDrawable().apply {
+                      setColor(Color.parseColor(fillHex))
+                      cornerRadius = dp(context, radiusDp).toFloat()
+                      setStroke(dp(context, strokeWidthDp).coerceAtLeast(1), Color.parseColor(strokeHex))
+                  }
+              }
+
+              fun glassGradientPanel(
+                  context: Context,
+                  startHex: String,
+                  endHex: String,
+                  strokeHex: String,
+                  radiusDp: Int = 20
+              ): GradientDrawable {
+                  return GradientDrawable(
+                      GradientDrawable.Orientation.TL_BR,
+                      intArrayOf(Color.parseColor(startHex), Color.parseColor(endHex))
+                  ).apply {
+                      cornerRadius = dp(context, radiusDp).toFloat()
+                      setStroke(dp(context, 1).coerceAtLeast(1), Color.parseColor(strokeHex))
+                  }
               }
           }
           ''')
@@ -1321,23 +1637,33 @@ jobs:
           write(os.path.join(PKG_DIR, "MainActivity.kt"), r'''
           package com.aiagent.android
 
-          import android.app.AlertDialog
+          import android.Manifest
+          import android.app.Dialog
+          import android.content.ClipData
+          import android.content.ClipboardManager
+          import android.content.Context
           import android.content.Intent
+          import android.content.pm.PackageManager
           import android.graphics.Color
-          import android.graphics.drawable.GradientDrawable
+          import android.graphics.drawable.ColorDrawable
           import android.net.Uri
+          import android.os.Build
           import android.os.Bundle
           import android.provider.Settings
           import android.view.Gravity
           import android.view.View
           import android.view.ViewGroup
+          import android.view.Window
           import android.widget.Button
           import android.widget.EditText
+          import android.widget.FrameLayout
           import android.widget.LinearLayout
           import android.widget.ScrollView
           import android.widget.TextView
           import android.widget.Toast
           import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.app.ActivityCompat
+          import androidx.core.content.ContextCompat
           import androidx.lifecycle.lifecycleScope
           import kotlinx.coroutines.CancellationException
           import kotlinx.coroutines.Job
@@ -1352,16 +1678,28 @@ jobs:
               val text: String
           )
 
+          data class ChatSession(
+              val id: String,
+              var title: String,
+              val messages: MutableList<ChatMessage>
+          )
+
           class MainActivity : AppCompatActivity() {
 
-              private val prefs by lazy { getSharedPreferences("agent_prefs_v16", MODE_PRIVATE) }
-              private val messages = mutableListOf<ChatMessage>()
+              companion object {
+                  private const val DEFAULT_MODEL = "gemini-4-hydrogen"
+              }
+
+              private val prefs by lazy { getSharedPreferences("agent_prefs_v20", MODE_PRIVATE) }
+              private val sessions = mutableListOf<ChatSession>()
+              private var currentSessionId: String = ""
               private val commandQueue = ArrayDeque<String>()
               private var runningJob: Job? = null
               private var isProcessingQueue = false
 
               private lateinit var statusBanner: TextView
               private lateinit var statusActionBtn: Button
+              private lateinit var modelChip: TextView
               private lateinit var chatScroll: ScrollView
               private lateinit var chatContainer: LinearLayout
               private lateinit var inputBox: EditText
@@ -1375,11 +1713,19 @@ jobs:
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   window.decorView.layoutDirection = View.LAYOUT_DIRECTION_RTL
+                  window.statusBarColor = Color.parseColor("#060918")
+                  window.navigationBarColor = Color.parseColor("#091124")
+
+                  migrateOldApiKeyIfNeeded()
+                  requestNotificationPermissionIfNeeded()
                   buildUi()
-                  loadChatHistory()
+                  loadSessions()
                   renderChat()
                   AgentAccessibilityService.addConnectionListener(connectionListener)
                   updateAccessibilityBanner()
+                  if (AccessibilityHelper.isConnected()) {
+                      KeepAliveService.start(applicationContext)
+                  }
               }
 
               override fun onResume() {
@@ -1397,82 +1743,126 @@ jobs:
                   super.onDestroy()
               }
 
-              private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-
-              private fun roundedBg(colorHex: String, radiusDp: Int): GradientDrawable {
-                  return GradientDrawable().apply {
-                      setColor(Color.parseColor(colorHex))
-                      cornerRadius = dp(radiusDp).toFloat()
+              private fun migrateOldApiKeyIfNeeded() {
+                  if (prefs.getString("api_key", "").isNullOrBlank()) {
+                      val oldKey = getSharedPreferences("agent_prefs_v16", MODE_PRIVATE).getString("api_key", "")
+                      if (!oldKey.isNullOrBlank()) {
+                          prefs.edit().putString("api_key", oldKey).apply()
+                      }
                   }
               }
 
+              private fun requestNotificationPermissionIfNeeded() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                      if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                          != PackageManager.PERMISSION_GRANTED
+                      ) {
+                          ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+                      }
+                  }
+              }
+
+              private fun dp(v: Int): Int = GlassStyle.dp(this, v)
+
+              private fun currentSession(): ChatSession {
+                  val found = sessions.firstOrNull { it.id == currentSessionId }
+                  if (found != null) return found
+                  val created = ChatSession("chat_${System.currentTimeMillis()}", "صفحه جدید", mutableListOf())
+                  sessions.add(0, created)
+                  currentSessionId = created.id
+                  saveSessions()
+                  return created
+              }
+
               private fun buildUi() {
+                  val frame = FrameLayout(this)
+                  frame.addView(
+                      GlassAuroraBackgroundView(this),
+                      FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.MATCH_PARENT
+                      )
+                  )
+
                   val root = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setBackgroundColor(Color.parseColor("#0F172A"))
                       layoutDirection = View.LAYOUT_DIRECTION_RTL
+                      setPadding(dp(10), dp(10), dp(10), dp(10))
                   }
 
                   val header = LinearLayout(this).apply {
                       orientation = LinearLayout.HORIZONTAL
                       gravity = Gravity.CENTER_VERTICAL
-                      setBackgroundColor(Color.parseColor("#1E293B"))
-                      setPadding(dp(12), dp(12), dp(12), dp(12))
+                      background = GlassStyle.glassGradientPanel(
+                          this@MainActivity, "#2EFFFFFF", "#18FFFFFF", "#55FFFFFF", 20
+                      )
+                      setPadding(dp(12), dp(10), dp(12), dp(10))
                   }
 
-                  val titleTv = TextView(this).apply {
-                      text = "ایجنت هوشمند ۱.۶"
-                      setTextColor(Color.WHITE)
-                      textSize = 17f
+                  val titleCol = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
                       layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                   }
 
-                  val clearBtn = Button(this).apply {
-                      text = "حذف چت"
-                      textSize = 12f
+                  val titleTv = TextView(this).apply {
+                      text = "ایجنت هوشمند ۲.۰"
                       setTextColor(Color.WHITE)
-                      background = roundedBg("#DC2626", 8)
-                      setPadding(dp(10), dp(4), dp(10), dp(4))
-                      setOnClickListener { confirmClearChat() }
+                      textSize = 16.5f
                   }
 
-                  val settingsBtn = Button(this).apply {
-                      text = "تنظیمات"
-                      textSize = 12f
-                      setTextColor(Color.WHITE)
-                      background = roundedBg("#334155", 8)
-                      setPadding(dp(10), dp(4), dp(10), dp(4))
-                      layoutParams = LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT,
-                          ViewGroup.LayoutParams.WRAP_CONTENT
-                      ).apply { marginStart = dp(8) }
-                      setOnClickListener { showSettingsDialog() }
+                  modelChip = TextView(this).apply {
+                      text = "⚡ ${prefs.getString("model", DEFAULT_MODEL)}"
+                      setTextColor(Color.parseColor("#7DD3FC"))
+                      textSize = 11f
                   }
 
-                  header.addView(titleTv)
-                  header.addView(clearBtn)
+                  titleCol.addView(titleTv)
+                  titleCol.addView(modelChip)
+
+                  val newChatBtn = makeGlassButton("+ جدید", "#3838BDF8", "#667DD3FC") {
+                      createNewSession()
+                  }
+
+                  val pagesBtn = makeGlassButton("صفحات", "#2AFFFFFF", "#50FFFFFF") {
+                      showSessionsDialog()
+                  }
+
+                  val settingsBtn = makeGlassButton("تنظیمات", "#2A8B5CF6", "#66C4B5FD") {
+                      showSettingsDialog()
+                  }
+
+                  header.addView(titleCol)
+                  header.addView(newChatBtn)
+                  header.addView(pagesBtn)
                   header.addView(settingsBtn)
                   root.addView(header)
 
                   val statusRow = LinearLayout(this).apply {
                       orientation = LinearLayout.HORIZONTAL
                       gravity = Gravity.CENTER_VERTICAL
-                      setBackgroundColor(Color.parseColor("#172033"))
-                      setPadding(dp(12), dp(8), dp(12), dp(8))
+                      background = GlassStyle.glassPanel(this@MainActivity, "#1EFFFFFF", "#3DFFFFFF", 16)
+                      setPadding(dp(12), dp(7), dp(12), dp(7))
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = dp(8) }
                   }
 
                   statusBanner = TextView(this).apply {
-                      textSize = 12.5f
+                      textSize = 12f
                       setTextColor(Color.WHITE)
                       layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                   }
 
                   statusActionBtn = Button(this).apply {
-                      text = "تنظیمات دسترسی"
-                      textSize = 11.5f
+                      text = "روشن کردن"
+                      textSize = 11f
+                      isAllCaps = false
                       setTextColor(Color.WHITE)
-                      background = roundedBg("#2563EB", 8)
+                      background = GlassStyle.glassPanel(this@MainActivity, "#4438BDF8", "#807DD3FC", 12)
                       setPadding(dp(10), dp(4), dp(10), dp(4))
+                      minHeight = 0
+                      minimumHeight = 0
                       setOnClickListener { openAccessibilitySettings() }
                   }
 
@@ -1485,8 +1875,10 @@ jobs:
                           ViewGroup.LayoutParams.MATCH_PARENT,
                           0,
                           1f
-                      )
-                      setPadding(dp(10), dp(10), dp(10), dp(10))
+                      ).apply {
+                          topMargin = dp(8)
+                          bottomMargin = dp(8)
+                      }
                   }
                   chatContainer = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
@@ -1497,15 +1889,17 @@ jobs:
                   val bottomBar = LinearLayout(this).apply {
                       orientation = LinearLayout.HORIZONTAL
                       gravity = Gravity.CENTER_VERTICAL
-                      setBackgroundColor(Color.parseColor("#1E293B"))
+                      background = GlassStyle.glassGradientPanel(
+                          this@MainActivity, "#28FFFFFF", "#16FFFFFF", "#50FFFFFF", 22
+                      )
                       setPadding(dp(8), dp(8), dp(8), dp(8))
                   }
 
                   inputBox = EditText(this).apply {
-                      hint = "دستورت را بنویس (مثلاً: ترب را باز کن)..."
-                      setHintTextColor(Color.parseColor("#94A3B8"))
+                      hint = "دستور کاملت را بنویس..."
+                      setHintTextColor(Color.parseColor("#CBD5E1"))
                       setTextColor(Color.WHITE)
-                      background = roundedBg("#0F172A", 12)
+                      background = GlassStyle.glassPanel(this@MainActivity, "#220F172A", "#35FFFFFF", 16)
                       setPadding(dp(12), dp(10), dp(12), dp(10))
                       textSize = 14f
                       maxLines = 4
@@ -1515,9 +1909,13 @@ jobs:
                   stopBtn = Button(this).apply {
                       text = "توقف"
                       textSize = 12f
+                      isAllCaps = false
                       setTextColor(Color.WHITE)
-                      background = roundedBg("#B91C1C", 10)
+                      background = GlassStyle.glassPanel(this@MainActivity, "#66EF4444", "#99FCA5A5", 14)
                       visibility = View.GONE
+                      setPadding(dp(10), dp(8), dp(10), dp(8))
+                      minWidth = 0
+                      minimumWidth = 0
                       layoutParams = LinearLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT,
                           ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1528,8 +1926,14 @@ jobs:
                   sendBtn = Button(this).apply {
                       text = "ارسال"
                       textSize = 13f
+                      isAllCaps = false
                       setTextColor(Color.WHITE)
-                      background = roundedBg("#16A34A", 10)
+                      background = GlassStyle.glassGradientPanel(
+                          this@MainActivity, "#8838BDF8", "#888B5CF6", "#AAFFFFFF", 14
+                      )
+                      setPadding(dp(14), dp(8), dp(14), dp(8))
+                      minWidth = 0
+                      minimumWidth = 0
                       layoutParams = LinearLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT,
                           ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1542,28 +1946,66 @@ jobs:
                   bottomBar.addView(sendBtn)
                   root.addView(bottomBar)
 
-                  setContentView(root)
+                  frame.addView(
+                      root,
+                      FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.MATCH_PARENT
+                      )
+                  )
+                  setContentView(frame)
+              }
+
+              private fun makeGlassButton(label: String, fill: String, stroke: String, onClick: () -> Unit): Button {
+                  return Button(this).apply {
+                      text = label
+                      textSize = 11.5f
+                      isAllCaps = false
+                      setTextColor(Color.WHITE)
+                      background = GlassStyle.glassPanel(this@MainActivity, fill, stroke, 12)
+                      setPadding(dp(9), dp(5), dp(9), dp(5))
+                      minWidth = 0
+                      minimumWidth = 0
+                      minHeight = 0
+                      minimumHeight = 0
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { marginStart = dp(6) }
+                      setOnClickListener { onClick() }
+                  }
               }
 
               private fun updateAccessibilityBanner() {
                   when (AccessibilityHelper.getState(this)) {
                       ServiceState.CONNECTED -> {
-                          statusBanner.text = "🟢 سرویس دسترسی فعال و متصل است"
-                          statusBanner.setTextColor(Color.parseColor("#4ADE80"))
-                          statusActionBtn.visibility = View.GONE
+                          val batteryOk = AccessibilityHelper.isIgnoringBatteryOptimizations(this)
+                          statusBanner.text = if (batteryOk) {
+                              "🟢 دسترس‌پذیری فعال و محافظت‌شده در پس‌زمینه"
+                          } else {
+                              "🟢 دسترس‌پذیری فعال است (برای جلوگیری از قطع خودکار، باتری را بدون محدودیت کن)"
+                          }
+                          statusBanner.setTextColor(Color.parseColor("#86EFAC"))
+                          if (batteryOk) {
+                              statusActionBtn.visibility = View.GONE
+                          } else {
+                              statusActionBtn.text = "حفظ اتصال"
+                              statusActionBtn.setOnClickListener { requestIgnoreBatteryOptimizations() }
+                              statusActionBtn.visibility = View.VISIBLE
+                          }
                       }
                       ServiceState.ENABLED_BUT_SUSPENDED -> {
-                          statusBanner.text = "🟡 در تنظیمات روشن است، اما شیائومی اتصالش را معلق کرده (یک‌بار خاموش/روشن کن)"
-                          statusBanner.setTextColor(Color.parseColor("#FBBF24"))
+                          statusBanner.text = "🟡 در تنظیمات روشن است ولی سیستم اتصالش را معلق کرده"
+                          statusBanner.setTextColor(Color.parseColor("#FDE047"))
                           statusActionBtn.text = "اتصال مجدد"
-                          statusActionBtn.background = roundedBg("#D97706", 8)
+                          statusActionBtn.setOnClickListener { openAccessibilitySettings() }
                           statusActionBtn.visibility = View.VISIBLE
                       }
                       ServiceState.DISABLED -> {
-                          statusBanner.text = "🔴 سرویس دسترسی خاموش است"
-                          statusBanner.setTextColor(Color.parseColor("#F87171"))
+                          statusBanner.text = "🔴 سرویس دسترس‌پذیری خاموش است"
+                          statusBanner.setTextColor(Color.parseColor("#FCA5A5"))
                           statusActionBtn.text = "روشن کردن"
-                          statusActionBtn.background = roundedBg("#2563EB", 8)
+                          statusActionBtn.setOnClickListener { openAccessibilitySettings() }
                           statusActionBtn.visibility = View.VISIBLE
                       }
                   }
@@ -1577,6 +2019,17 @@ jobs:
                   }
               }
 
+              private fun requestIgnoreBatteryOptimizations() {
+                  try {
+                      val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                          data = Uri.parse("package:$packageName")
+                      }
+                      startActivity(intent)
+                  } catch (_: Exception) {
+                      openAppDetailsSettings()
+                  }
+              }
+
               private fun openAppDetailsSettings() {
                   try {
                       val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
@@ -1587,57 +2040,269 @@ jobs:
                   }
               }
 
-              private fun showSettingsDialog() {
-                  val layout = LinearLayout(this).apply {
+              private fun createGlassDialog(title: String, contentBuilder: (LinearLayout, Dialog) -> Unit) {
+                  val dialog = Dialog(this)
+                  dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+                  dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+
+                  val card = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(dp(18), dp(14), dp(18), dp(6))
                       layoutDirection = View.LAYOUT_DIRECTION_RTL
+                      background = GlassStyle.glassGradientPanel(
+                          this@MainActivity, "#E6121A36", "#E61E1442", "#66FFFFFF", 24
+                      )
+                      setPadding(dp(18), dp(16), dp(18), dp(16))
                   }
 
-                  val keyInput = EditText(this).apply {
-                      hint = "کلید Gemini API"
-                      setText(prefs.getString("api_key", ""))
+                  val titleTv = TextView(this).apply {
+                      text = title
+                      setTextColor(Color.WHITE)
+                      textSize = 17f
+                      setPadding(0, 0, 0, dp(10))
                   }
-                  val modelInput = EditText(this).apply {
-                      hint = "نام مدل (پیش‌فرض: gemini-3.5-flash-lite)"
-                      setText(prefs.getString("model", "gemini-3.5-flash-lite"))
-                  }
-                  val stepsInput = EditText(this).apply {
-                      hint = "حداکثر مراحل (پیش‌فرض: 40)"
-                      setText(prefs.getInt("max_steps", 40).toString())
-                  }
+                  card.addView(titleTv)
+                  contentBuilder(card, dialog)
 
-                  val accBtn = Button(this).apply {
-                      text = "باز کردن تنظیمات دسترس‌پذیری (Accessibility)"
-                      setOnClickListener { openAccessibilitySettings() }
-                  }
-                  val batteryBtn = Button(this).apply {
-                      text = "تنظیمات باتری و Autostart برنامه (شیائومی)"
-                      setOnClickListener { openAppDetailsSettings() }
-                  }
+                  val scroll = ScrollView(this).apply { addView(card) }
+                  dialog.setContentView(scroll)
+                  dialog.window?.setLayout(
+                      (resources.displayMetrics.widthPixels * 0.92).toInt(),
+                      ViewGroup.LayoutParams.WRAP_CONTENT
+                  )
+                  dialog.show()
+              }
 
-                  layout.addView(TextView(this).apply { text = "کلید Gemini API:" })
-                  layout.addView(keyInput)
-                  layout.addView(TextView(this).apply { text = "مدل Gemini:" })
-                  layout.addView(modelInput)
-                  layout.addView(TextView(this).apply { text = "حداکثر مراحل:" })
-                  layout.addView(stepsInput)
-                  layout.addView(accBtn)
-                  layout.addView(batteryBtn)
-
-                  AlertDialog.Builder(this)
-                      .setTitle("تنظیمات ایجنت")
-                      .setView(layout)
-                      .setPositiveButton("ذخیره") { _, _ ->
-                          prefs.edit()
-                              .putString("api_key", keyInput.text.toString().trim())
-                              .putString("model", modelInput.text.toString().trim().ifEmpty { "gemini-3.5-flash-lite" })
-                              .putInt("max_steps", stepsInput.text.toString().toIntOrNull()?.coerceIn(5, 60) ?: 40)
-                              .apply()
-                          Toast.makeText(this, "تنظیمات ذخیره شد", Toast.LENGTH_SHORT).show()
+              private fun showSettingsDialog() {
+                  createGlassDialog("⚙️ تنظیمات شیشه‌ای ایجنت") { container, dialog ->
+                      fun styledInput(hintText: String, initial: String): EditText {
+                          return EditText(this).apply {
+                              hint = hintText
+                              setHintTextColor(Color.parseColor("#94A3B8"))
+                              setTextColor(Color.WHITE)
+                              setText(initial)
+                              background = GlassStyle.glassPanel(this@MainActivity, "#24FFFFFF", "#44FFFFFF", 14)
+                              setPadding(dp(12), dp(10), dp(12), dp(10))
+                              textSize = 13.5f
+                              layoutParams = LinearLayout.LayoutParams(
+                                  ViewGroup.LayoutParams.MATCH_PARENT,
+                                  ViewGroup.LayoutParams.WRAP_CONTENT
+                              ).apply { bottomMargin = dp(10) }
+                          }
                       }
-                      .setNegativeButton("بستن", null)
-                      .show()
+
+                      fun label(t: String): TextView = TextView(this).apply {
+                          text = t
+                          setTextColor(Color.parseColor("#CBD5E1"))
+                          textSize = 12.5f
+                          setPadding(0, dp(2), 0, dp(4))
+                      }
+
+                      val keyInput = styledInput("کلید Gemini API", prefs.getString("api_key", "").orEmpty())
+                      val modelInput = styledInput("مدل (پیش‌فرض: $DEFAULT_MODEL)", prefs.getString("model", DEFAULT_MODEL).orEmpty())
+                      val stepsInput = styledInput("حداکثر مراحل (پیش‌فرض: 40)", prefs.getInt("max_steps", 40).toString())
+
+                      container.addView(label("کلید Gemini API:"))
+                      container.addView(keyInput)
+                      container.addView(label("مدل هوش مصنوعی (جمینی هیدروژن):"))
+                      container.addView(modelInput)
+                      container.addView(label("حداکثر مراحل:"))
+                      container.addView(stepsInput)
+
+                      val accBtn = Button(this).apply {
+                          text = "🔓 باز کردن تنظیمات دسترس‌پذیری"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassPanel(this@MainActivity, "#3338BDF8", "#667DD3FC", 14)
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(8) }
+                          setOnClickListener { openAccessibilitySettings() }
+                      }
+
+                      val keepBtn = Button(this).apply {
+                          text = "🛡️ جلوگیری از قطع خودکار (حذف محدودیت باتری)"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassPanel(this@MainActivity, "#3322C55E", "#6686EFAC", 14)
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(8) }
+                          setOnClickListener { requestIgnoreBatteryOptimizations() }
+                      }
+
+                      val xiaomiBtn = Button(this).apply {
+                          text = "⚙️ تنظیمات Autostart و پس‌زمینه (شیائومی)"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassPanel(this@MainActivity, "#28FFFFFF", "#50FFFFFF", 14)
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(12) }
+                          setOnClickListener { openAppDetailsSettings() }
+                      }
+
+                      container.addView(accBtn)
+                      container.addView(keepBtn)
+                      container.addView(xiaomiBtn)
+
+                      val btnRow = LinearLayout(this).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          gravity = Gravity.END
+                      }
+
+                      val saveBtn = Button(this).apply {
+                          text = "ذخیره تنظیمات"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassGradientPanel(
+                              this@MainActivity, "#8838BDF8", "#888B5CF6", "#AAFFFFFF", 14
+                          )
+                          setPadding(dp(16), dp(8), dp(16), dp(8))
+                          setOnClickListener {
+                              val newModel = modelInput.text.toString().trim().ifEmpty { DEFAULT_MODEL }
+                              prefs.edit()
+                                  .putString("api_key", keyInput.text.toString().trim())
+                                  .putString("model", newModel)
+                                  .putInt("max_steps", stepsInput.text.toString().toIntOrNull()?.coerceIn(5, 60) ?: 40)
+                                  .apply()
+                              modelChip.text = "⚡ $newModel"
+                              Toast.makeText(this@MainActivity, "تنظیمات ذخیره شد", Toast.LENGTH_SHORT).show()
+                              dialog.dismiss()
+                          }
+                      }
+
+                      val closeBtn = Button(this).apply {
+                          text = "بستن"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassPanel(this@MainActivity, "#26FFFFFF", "#44FFFFFF", 14)
+                          setPadding(dp(14), dp(8), dp(14), dp(8))
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.WRAP_CONTENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { marginStart = dp(8) }
+                          setOnClickListener { dialog.dismiss() }
+                      }
+
+                      btnRow.addView(saveBtn)
+                      btnRow.addView(closeBtn)
+                      container.addView(btnRow)
+                  }
+              }
+
+              private fun showSessionsDialog() {
+                  createGlassDialog("🗂️ صفحات گفتگو") { container, dialog ->
+                      val newBtn = Button(this).apply {
+                          text = "+ باز کردن صفحه جدید"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassGradientPanel(
+                              this@MainActivity, "#7738BDF8", "#778B5CF6", "#99FFFFFF", 14
+                          )
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(10) }
+                          setOnClickListener {
+                              createNewSession()
+                              dialog.dismiss()
+                          }
+                      }
+                      container.addView(newBtn)
+
+                      val clearCurrentBtn = Button(this).apply {
+                          text = "🗑️ پاک کردن پیام‌های صفحه فعلی"
+                          isAllCaps = false
+                          setTextColor(Color.parseColor("#FCA5A5"))
+                          background = GlassStyle.glassPanel(this@MainActivity, "#28EF4444", "#55FCA5A5", 14)
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(12) }
+                          setOnClickListener {
+                              currentSession().messages.clear()
+                              saveSessions()
+                              renderChat()
+                              dialog.dismiss()
+                          }
+                      }
+                      container.addView(clearCurrentBtn)
+
+                      for (s in sessions.toList()) {
+                          val isCurrent = s.id == currentSessionId
+                          val row = LinearLayout(this).apply {
+                              orientation = LinearLayout.HORIZONTAL
+                              gravity = Gravity.CENTER_VERTICAL
+                              background = GlassStyle.glassPanel(
+                                  this@MainActivity,
+                                  if (isCurrent) "#4438BDF8" else "#20FFFFFF",
+                                  if (isCurrent) "#997DD3FC" else "#3DFFFFFF",
+                                  14
+                              )
+                              setPadding(dp(12), dp(10), dp(10), dp(10))
+                              layoutParams = LinearLayout.LayoutParams(
+                                  ViewGroup.LayoutParams.MATCH_PARENT,
+                                  ViewGroup.LayoutParams.WRAP_CONTENT
+                              ).apply { bottomMargin = dp(8) }
+                              setOnClickListener {
+                                  currentSessionId = s.id
+                                  saveSessions()
+                                  renderChat()
+                                  dialog.dismiss()
+                              }
+                          }
+
+                          val titleTv = TextView(this).apply {
+                              text = "${if (isCurrent) "● " else ""}${s.title} (${s.messages.size})"
+                              setTextColor(Color.WHITE)
+                              textSize = 13.5f
+                              layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                          }
+
+                          val delTv = TextView(this).apply {
+                              text = " ✕ "
+                              setTextColor(Color.parseColor("#FCA5A5"))
+                              textSize = 14f
+                              setPadding(dp(8), dp(2), dp(4), dp(2))
+                              setOnClickListener {
+                                  sessions.removeAll { it.id == s.id }
+                                  if (sessions.isEmpty()) {
+                                      createNewSession()
+                                  } else if (currentSessionId == s.id) {
+                                      currentSessionId = sessions.first().id
+                                  }
+                                  saveSessions()
+                                  renderChat()
+                                  dialog.dismiss()
+                              }
+                          }
+
+                          row.addView(titleTv)
+                          row.addView(delTv)
+                          container.addView(row)
+                      }
+                  }
+              }
+
+              private fun createNewSession() {
+                  val created = ChatSession("chat_${System.currentTimeMillis()}", "صفحه جدید", mutableListOf())
+                  sessions.add(0, created)
+                  currentSessionId = created.id
+                  saveSessions()
+                  renderChat()
+                  Toast.makeText(this, "صفحه گفتگوی جدید باز شد", Toast.LENGTH_SHORT).show()
+              }
+
+              private fun copyToClipboard(text: String) {
+                  try {
+                      val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                      cm.setPrimaryClip(ClipData.newPlainText("agent_message", text))
+                      Toast.makeText(this, "پیام کپی شد", Toast.LENGTH_SHORT).show()
+                  } catch (_: Exception) {
+                  }
               }
 
               private fun onSendClicked() {
@@ -1652,11 +2317,15 @@ jobs:
                   }
 
                   inputBox.setText("")
+                  val session = currentSession()
+                  if (session.messages.isEmpty() || session.title == "صفحه جدید") {
+                      session.title = cmd.take(28)
+                  }
                   addMessage(isUser = true, text = cmd)
                   commandQueue.addLast(cmd)
 
                   if (isProcessingQueue) {
-                      addMessage(isUser = false, text = "⏳ در صف قرار گرفت؛ بلافاصله بعد از اتمام کار فعلی اجرا می‌شود.")
+                      addMessage(isUser = false, text = "⏳ در صف قرار گرفت؛ بلافاصله بعد از کار فعلی اجرا می‌شود.")
                   } else {
                       processQueue()
                   }
@@ -1672,7 +2341,7 @@ jobs:
                           while (commandQueue.isNotEmpty()) {
                               val goal = commandQueue.removeFirst()
                               val apiKey = prefs.getString("api_key", "").orEmpty().trim()
-                              val model = prefs.getString("model", "gemini-3.5-flash-lite").orEmpty().trim()
+                              val model = prefs.getString("model", DEFAULT_MODEL).orEmpty().trim().ifEmpty { DEFAULT_MODEL }
                               val maxSteps = prefs.getInt("max_steps", 40)
 
                               val runner = AgentRunner(
@@ -1688,7 +2357,7 @@ jobs:
                               addMessage(isUser = false, text = finalResult)
                           }
                       } catch (_: CancellationException) {
-                          addMessage(isUser = false, text = "⛔ اجرای دستور توسط شما متوقف شد.")
+                          addMessage(isUser = false, text = "⛔ اجرای دستور متوقف شد.")
                       } finally {
                           isProcessingQueue = false
                           stopBtn.visibility = View.GONE
@@ -1703,33 +2372,38 @@ jobs:
               }
 
               private fun addMessage(isUser: Boolean, text: String) {
-                  messages.add(ChatMessage(System.nanoTime(), isUser, text))
-                  saveChatHistory()
+                  currentSession().messages.add(ChatMessage(System.nanoTime(), isUser, text))
+                  saveSessions()
                   renderChat()
               }
 
               private fun deleteMessage(id: Long) {
-                  messages.removeAll { it.id == id }
-                  saveChatHistory()
+                  currentSession().messages.removeAll { it.id == id }
+                  saveSessions()
                   renderChat()
-              }
-
-              private fun confirmClearChat() {
-                  AlertDialog.Builder(this)
-                      .setTitle("حذف کل چت")
-                      .setMessage("همه پیام‌های چت پاک شوند؟")
-                      .setPositiveButton("بله، پاک کن") { _, _ ->
-                          messages.clear()
-                          saveChatHistory()
-                          renderChat()
-                      }
-                      .setNegativeButton("انصراف", null)
-                      .show()
               }
 
               private fun renderChat() {
                   chatContainer.removeAllViews()
-                  for (msg in messages) {
+                  val msgs = currentSession().messages
+                  if (msgs.isEmpty()) {
+                      val emptyCard = TextView(this).apply {
+                          text = "✨ آماده اجرای دقیق دستورات با Gemini 4 Hydrogen\n\nدستور کاملت را پایین بنویس تا مرحله‌به‌مرحله و واقعی روی گوشی انجام شود."
+                          setTextColor(Color.parseColor("#E2E8F0"))
+                          textSize = 13.5f
+                          gravity = Gravity.CENTER
+                          background = GlassStyle.glassPanel(this@MainActivity, "#1EFFFFFF", "#3BFFFFFF", 20)
+                          setPadding(dp(18), dp(20), dp(18), dp(20))
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { topMargin = dp(24) }
+                      }
+                      chatContainer.addView(emptyCard)
+                      return
+                  }
+
+                  for (msg in msgs) {
                       val row = LinearLayout(this).apply {
                           orientation = LinearLayout.HORIZONTAL
                           gravity = if (msg.isUser) Gravity.START else Gravity.END
@@ -1737,16 +2411,23 @@ jobs:
                               ViewGroup.LayoutParams.MATCH_PARENT,
                               ViewGroup.LayoutParams.WRAP_CONTENT
                           ).apply {
-                              topMargin = dp(4)
-                              bottomMargin = dp(4)
+                              topMargin = dp(5)
+                              bottomMargin = dp(5)
                           }
                       }
 
                       val bubble = LinearLayout(this).apply {
-                          orientation = LinearLayout.HORIZONTAL
-                          gravity = Gravity.CENTER_VERTICAL
-                          background = roundedBg(if (msg.isUser) "#2563EB" else "#1E293B", 14)
-                          setPadding(dp(12), dp(8), dp(10), dp(8))
+                          orientation = LinearLayout.VERTICAL
+                          background = if (msg.isUser) {
+                              GlassStyle.glassGradientPanel(
+                                  this@MainActivity, "#5538BDF8", "#556366F1", "#88A5F3FC", 18
+                              )
+                          } else {
+                              GlassStyle.glassGradientPanel(
+                                  this@MainActivity, "#2EFFFFFF", "#1A1E293B", "#4DFFFFFF", 18
+                              )
+                          }
+                          setPadding(dp(12), dp(9), dp(12), dp(7))
                           layoutParams = LinearLayout.LayoutParams(
                               ViewGroup.LayoutParams.WRAP_CONTENT,
                               ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1757,60 +2438,121 @@ jobs:
                           text = msg.text
                           setTextColor(Color.WHITE)
                           textSize = 13.5f
-                          maxWidth = (resources.displayMetrics.widthPixels * 0.72).toInt()
+                          setTextIsSelectable(true)
+                          maxWidth = (resources.displayMetrics.widthPixels * 0.78).toInt()
+                      }
+
+                      val actionsRow = LinearLayout(this).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          gravity = Gravity.END
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { topMargin = dp(6) }
+                      }
+
+                      val copyBtn = TextView(this).apply {
+                          text = "کپی"
+                          setTextColor(Color.parseColor("#BAE6FD"))
+                          textSize = 11f
+                          background = GlassStyle.glassPanel(this@MainActivity, "#22FFFFFF", "#40FFFFFF", 8)
+                          setPadding(dp(8), dp(2), dp(8), dp(2))
+                          setOnClickListener { copyToClipboard(msg.text) }
                       }
 
                       val delBtn = TextView(this).apply {
-                          text = " ✕ "
-                          setTextColor(Color.parseColor("#CBD5E1"))
-                          textSize = 13f
-                          setPadding(dp(6), dp(2), dp(2), dp(2))
+                          text = "حذف ✕"
+                          setTextColor(Color.parseColor("#FCA5A5"))
+                          textSize = 11f
+                          background = GlassStyle.glassPanel(this@MainActivity, "#22EF4444", "#44FCA5A5", 8)
+                          setPadding(dp(8), dp(2), dp(8), dp(2))
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.WRAP_CONTENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { marginStart = dp(6) }
                           setOnClickListener { deleteMessage(msg.id) }
                       }
 
+                      actionsRow.addView(copyBtn)
+                      actionsRow.addView(delBtn)
+
                       bubble.addView(tv)
-                      bubble.addView(delBtn)
+                      bubble.addView(actionsRow)
                       row.addView(bubble)
                       chatContainer.addView(row)
                   }
                   chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
               }
 
-              private fun saveChatHistory() {
+              private fun saveSessions() {
                   val arr = JSONArray()
-                  for (m in messages.takeLast(120)) {
-                      arr.put(
-                          JSONObject()
-                              .put("id", m.id)
-                              .put("isUser", m.isUser)
-                              .put("text", m.text)
-                      )
-                  }
-                  prefs.edit().putString("chat_history", arr.toString()).apply()
-              }
-
-              private fun loadChatHistory() {
-                  val raw = prefs.getString("chat_history", null) ?: return
-                  try {
-                      val arr = JSONArray(raw)
-                      messages.clear()
-                      for (i in 0 until arr.length()) {
-                          val o = arr.getJSONObject(i)
-                          messages.add(
-                              ChatMessage(
-                                  id = o.optLong("id", System.nanoTime() + i),
-                                  isUser = o.optBoolean("isUser", false),
-                                  text = o.optString("text", "")
-                              )
+                  for (s in sessions.take(30)) {
+                      val mArr = JSONArray()
+                      for (m in s.messages.takeLast(120)) {
+                          mArr.put(
+                              JSONObject()
+                                  .put("id", m.id)
+                                  .put("isUser", m.isUser)
+                                  .put("text", m.text)
                           )
                       }
-                  } catch (_: Exception) {
+                      arr.put(
+                          JSONObject()
+                              .put("id", s.id)
+                              .put("title", s.title)
+                              .put("messages", mArr)
+                      )
+                  }
+                  prefs.edit()
+                      .putString("sessions_json", arr.toString())
+                      .putString("current_session_id", currentSessionId)
+                      .apply()
+              }
+
+              private fun loadSessions() {
+                  val raw = prefs.getString("sessions_json", null)
+                  currentSessionId = prefs.getString("current_session_id", "").orEmpty()
+                  sessions.clear()
+                  if (!raw.isNullOrBlank()) {
+                      try {
+                          val arr = JSONArray(raw)
+                          for (i in 0 until arr.length()) {
+                              val o = arr.getJSONObject(i)
+                              val msgs = mutableListOf<ChatMessage>()
+                              val mArr = o.optJSONArray("messages")
+                              if (mArr != null) {
+                                  for (j in 0 until mArr.length()) {
+                                      val mo = mArr.getJSONObject(j)
+                                      msgs.add(
+                                          ChatMessage(
+                                              id = mo.optLong("id", System.nanoTime() + j),
+                                              isUser = mo.optBoolean("isUser", false),
+                                              text = mo.optString("text", "")
+                                          )
+                                      )
+                                  }
+                              }
+                              sessions.add(
+                                  ChatSession(
+                                      id = o.optString("id", "chat_$i"),
+                                      title = o.optString("title", "صفحه گفتگو"),
+                                      messages = msgs
+                                  )
+                              )
+                          }
+                      } catch (_: Exception) {
+                      }
+                  }
+                  if (sessions.isEmpty()) {
+                      val initial = ChatSession("chat_${System.currentTimeMillis()}", "صفحه جدید", mutableListOf())
+                      sessions.add(initial)
+                      currentSessionId = initial.id
                   }
               }
           }
           ''')
 
-          print("Generated Android AI Agent v1.6 project successfully.")
+          print("Generated Android AI Agent v2.0 successfully.")
           PYEOF
 
       - name: Generate Release Keystore
@@ -1830,5 +2572,6 @@ jobs:
       - name: Upload Signed Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: AndroidAIAgent-v1.6-APK
+          name: AndroidAIAgent-v2.0-APK
           path: AndroidAIAgentApp/app/build/outputs/apk/release/app-release.apk
+
