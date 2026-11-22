@@ -1,0 +1,2780 @@
+name: Build Android APK v2.1
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Generate Android AI Agent v2.1 (Glass + Gemini 4 Hydrogen + Schema/LowThinking)
+        run: |
+          python3 - << 'PYEOF'
+          import os
+          import textwrap
+
+          ROOT = "AndroidAIAgentApp"
+          PKG_DIR = os.path.join(ROOT, "app/src/main/java/com/aiagent/android")
+          RES_DIR = os.path.join(ROOT, "app/src/main/res")
+
+          def write(path, content):
+              os.makedirs(os.path.dirname(path), exist_ok=True)
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(textwrap.dedent(content).lstrip("\n"))
+
+          write(os.path.join(ROOT, "settings.gradle.kts"), r'''
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "AndroidAIAgent"
+          include(":app")
+          ''')
+
+          write(os.path.join(ROOT, "build.gradle.kts"), r'''
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          ''')
+
+          write(os.path.join(ROOT, "gradle.properties"), r'''
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style.official
+          android.nonTransitiveRClass=true
+          ''')
+          write(os.path.join(ROOT, "app/build.gradle.kts"), r'''
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.aiagent.android"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.aiagent.android"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 21
+                  versionName = "2.1"
+              }
+
+              signingConfigs {
+                  create("release") {
+                      storeFile = file("release.keystore")
+                      storePassword = "agentpass123"
+                      keyAlias = "agentkey"
+                      keyPassword = "agentpass123"
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      signingConfig = signingConfigs.getByName("release")
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("com.google.android.material:material:1.12.0")
+              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+          }
+          ''')
+
+          write(os.path.join(ROOT, "app/src/main/AndroidManifest.xml"), r'''
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="true"
+                  android:label="Android AI Agent"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.Material3.DayNight.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".KeepAliveService"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse"
+                      android:stopWithTask="false">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="Keep user-enabled accessibility automation service active in background" />
+                  </service>
+
+                  <service
+                      android:name=".AgentAccessibilityService"
+                      android:exported="false"
+                      android:label="Android AI Agent Service"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_service_config" />
+                  </service>
+              </application>
+          </manifest>
+          ''')
+
+          write(os.path.join(RES_DIR, "xml/accessibility_service_config.xml"), r'''
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagRetrieveInteractiveWindows|flagReportViewIds"
+              android:canPerformGestures="true"
+              android:canRetrieveWindowContent="true"
+              android:canTakeScreenshot="true"
+              android:description="@string/accessibility_service_description"
+              android:notificationTimeout="100" />
+          ''')
+
+          write(os.path.join(RES_DIR, "values/strings.xml"), r'''
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Android AI Agent</string>
+              <string name="accessibility_service_description">اجازه به ایجنت هوشمند (Gemini 4 Hydrogen) برای خواندن صفحه، باز کردن برنامه‌ها، لمس دکمه‌ها و اجرای دقیق دستورات شما.</string>
+          </resources>
+          ''')
+
+          write(os.path.join(PKG_DIR, "KeepAliveService.kt"), r'''
+          package com.aiagent.android
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.os.Build
+          import android.os.IBinder
+          import androidx.core.app.NotificationCompat
+
+          class KeepAliveService : Service() {
+
+              companion object {
+                  private const val CHANNEL_ID = "agent_keep_alive_channel"
+                  private const val NOTIF_ID = 2048
+
+                  fun start(context: Context) {
+                      try {
+                          val intent = Intent(context, KeepAliveService::class.java)
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                              context.startForegroundService(intent)
+                          } else {
+                              context.startService(intent)
+                          }
+                      } catch (_: Exception) {
+                      }
+                  }
+
+                  fun stop(context: Context) {
+                      try {
+                          context.stopService(Intent(context, KeepAliveService::class.java))
+                      } catch (_: Exception) {
+                      }
+                  }
+              }
+
+              override fun onCreate() {
+                  super.onCreate()
+                  createChannel()
+                  startInForeground()
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  startInForeground()
+                  return START_STICKY
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              private fun createChannel() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val nm = getSystemService(NotificationManager::class.java)
+                      val channel = NotificationChannel(
+                          CHANNEL_ID,
+                          "حفظ اتصال ایجنت هوشمند",
+                          NotificationManager.IMPORTANCE_LOW
+                      ).apply {
+                          description = "برای جلوگیری از قطع خودکار سرویس دسترس‌پذیری در پس‌زمینه"
+                          setShowBadge(false)
+                      }
+                      nm?.createNotificationChannel(channel)
+                  }
+              }
+
+              private fun startInForeground() {
+                  try {
+                      val openIntent = Intent(this, MainActivity::class.java).apply {
+                          flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                      }
+                      val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                          PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                      } else {
+                          PendingIntent.FLAG_UPDATE_CURRENT
+                      }
+                      val pi = PendingIntent.getActivity(this, 0, openIntent, pendingFlags)
+                      val notif: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                          .setSmallIcon(android.R.drawable.ic_menu_compass)
+                          .setContentTitle("ایجنت هوشمند فعال است")
+                          .setContentText("سرویس دسترس‌پذیری متصل و آماده اجرای دستورات است")
+                          .setOngoing(true)
+                          .setSilent(true)
+                          .setPriority(NotificationCompat.PRIORITY_LOW)
+                          .setContentIntent(pi)
+                          .build()
+
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                          startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                      } else {
+                          startForeground(NOTIF_ID, notif)
+                      }
+                  } catch (_: Exception) {
+                  }
+              }
+          }
+          ''')
+
+          write(os.path.join(PKG_DIR, "AccessibilityHelper.kt"), r'''
+          package com.aiagent.android
+
+          import android.accessibilityservice.AccessibilityServiceInfo
+          import android.content.ComponentName
+          import android.content.Context
+          import android.os.PowerManager
+          import android.provider.Settings
+          import android.view.accessibility.AccessibilityManager
+
+          enum class ServiceState {
+              CONNECTED,
+              ENABLED_BUT_SUSPENDED,
+              DISABLED
+          }
+
+          object AccessibilityHelper {
+
+              fun isConnected(): Boolean = AgentAccessibilityService.instance != null
+
+              fun isIgnoringBatteryOptimizations(context: Context): Boolean {
+                  return try {
+                      val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                      pm?.isIgnoringBatteryOptimizations(context.packageName) == true
+                  } catch (_: Exception) {
+                      false
+                  }
+              }
+
+              fun isEnabledInSettings(context: Context): Boolean {
+                  if (isConnected()) return true
+
+                  val myPkg = context.packageName
+                  val myCls = AgentAccessibilityService::class.java.name
+                  val myShortCls = AgentAccessibilityService::class.java.simpleName
+
+                  try {
+                      val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+                      val enabledList = am?.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+                      if (enabledList != null) {
+                          for (info in enabledList) {
+                              val si = info.resolveInfo?.serviceInfo ?: continue
+                              if (si.packageName == myPkg &&
+                                  (si.name == myCls || si.name.endsWith(".$myShortCls") || si.name == myShortCls)
+                              ) {
+                                  return true
+                              }
+                          }
+                      }
+                  } catch (_: Exception) {
+                  }
+
+                  try {
+                      val raw = Settings.Secure.getString(
+                          context.contentResolver,
+                          Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                      ) ?: ""
+                      val expected = ComponentName(myPkg, myCls)
+                      for (entry in raw.split(':')) {
+                          val trimmed = entry.trim()
+                          if (trimmed.isEmpty()) continue
+                          val parsed = ComponentName.unflattenFromString(trimmed)
+                          if (parsed != null && parsed == expected) return true
+                          if (trimmed.contains(myPkg) && trimmed.contains(myShortCls)) return true
+                      }
+                  } catch (_: Exception) {
+                  }
+
+                  return false
+              }
+
+              fun getState(context: Context): ServiceState {
+                  if (isConnected()) return ServiceState.CONNECTED
+                  if (isEnabledInSettings(context)) return ServiceState.ENABLED_BUT_SUSPENDED
+                  return ServiceState.DISABLED
+              }
+          }
+          ''')
+
+          write(os.path.join(PKG_DIR, "AgentAccessibilityService.kt"), r'''
+          package com.aiagent.android
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.content.ClipData
+          import android.content.ClipboardManager
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Bitmap
+          import android.graphics.Path
+          import android.graphics.Rect
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.util.Base64
+          import android.view.Display
+          import android.view.accessibility.AccessibilityEvent
+          import android.view.accessibility.AccessibilityNodeInfo
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.suspendCancellableCoroutine
+          import java.io.ByteArrayOutputStream
+          import java.util.concurrent.CopyOnWriteArraySet
+          import kotlin.coroutines.resume
+
+          data class UiElement(
+              val index: Int,
+              val text: String,
+              val desc: String,
+              val viewId: String,
+              val className: String,
+              val clickable: Boolean,
+              val editable: Boolean,
+              val scrollable: Boolean,
+              val bounds: Rect
+          )
+
+          data class ScreenSnapshot(
+              val foregroundPackage: String,
+              val elements: List<UiElement>,
+              val compactTree: String,
+              val hash: Int
+          )
+
+          data class ActionResult(
+              val success: Boolean,
+              val message: String
+          )
+
+          data class AppEntry(
+              val label: String,
+              val packageName: String
+          )
+
+          class AgentAccessibilityService : AccessibilityService() {
+
+              companion object {
+                  @Volatile
+                  var instance: AgentAccessibilityService? = null
+                      private set
+
+                  @Volatile
+                  var lastObservedPackage: String = ""
+                      private set
+
+                  private val listeners = CopyOnWriteArraySet<() -> Unit>()
+                  private val mainHandler = Handler(Looper.getMainLooper())
+
+                  fun addConnectionListener(listener: () -> Unit) {
+                      listeners.add(listener)
+                  }
+
+                  fun removeConnectionListener(listener: () -> Unit) {
+                      listeners.remove(listener)
+                  }
+
+                  private fun notifyListeners() {
+                      mainHandler.post {
+                          for (l in listeners) {
+                              try { l() } catch (_: Exception) {}
+                          }
+                      }
+                  }
+
+                  private val APP_ALIASES: Map<String, List<String>> = mapOf(
+                      "ترب" to listOf("ir.torob.android", "torob"),
+                      "torob" to listOf("ir.torob.android"),
+                      "دیجیکالا" to listOf("com.digikala", "digikala"),
+                      "digikala" to listOf("com.digikala"),
+                      "اسنپ" to listOf("cab.snapp.passenger", "snapp"),
+                      "snapp" to listOf("cab.snapp.passenger"),
+                      "اسنپفود" to listOf("com.zoodfood.android", "snappfood"),
+                      "دیوار" to listOf("ir.divar", "divar"),
+                      "divar" to listOf("ir.divar"),
+                      "شیپور" to listOf("com.sheypoor.mobile", "sheypoor"),
+                      "بله" to listOf("ir.nasim", "bale"),
+                      "ایتا" to listOf("ir.eitaa.messenger", "eitaa"),
+                      "روبیکا" to listOf("app.rbmain.a", "rubika"),
+                      "سروش" to listOf("mobi.mmdt.ottplus", "soroush"),
+                      "تلگرام" to listOf("org.telegram.messenger", "org.telegram.messenger.web", "telegram"),
+                      "telegram" to listOf("org.telegram.messenger", "org.telegram.messenger.web"),
+                      "واتساپ" to listOf("com.whatsapp", "whatsapp"),
+                      "whatsapp" to listOf("com.whatsapp"),
+                      "اینستاگرام" to listOf("com.instagram.android", "instagram"),
+                      "instagram" to listOf("com.instagram.android"),
+                      "کروم" to listOf("com.android.chrome", "chrome"),
+                      "chrome" to listOf("com.android.chrome"),
+                      "یوتیوب" to listOf("com.google.android.youtube", "youtube"),
+                      "youtube" to listOf("com.google.android.youtube"),
+                      "جیمیل" to listOf("com.google.android.gm", "gmail"),
+                      "gmail" to listOf("com.google.android.gm"),
+                      "گوگل" to listOf("com.google.android.googlequicksearchbox", "google"),
+                      "google" to listOf("com.google.android.googlequicksearchbox"),
+                      "نقشه" to listOf("com.google.android.apps.maps", "maps"),
+                      "maps" to listOf("com.google.android.apps.maps"),
+                      "بلد" to listOf("ir.balad", "balad"),
+                      "نشان" to listOf("org.rajman.neshan.traffic.navigator", "neshan"),
+                      "بازار" to listOf("com.farsitel.bazaar", "bazaar"),
+                      "مایکت" to listOf("ir.mservices.market", "myket"),
+                      "فروشگاه" to listOf("com.android.vending", "play store"),
+                      "پلی استور" to listOf("com.android.vending"),
+                      "تنظیمات" to listOf("com.android.settings", "settings"),
+                      "settings" to listOf("com.android.settings"),
+                      "دوربین" to listOf("com.android.camera", "camera"),
+                      "گالری" to listOf("com.miui.gallery", "com.google.android.apps.photos", "gallery"),
+                      "ساعت" to listOf("com.android.deskclock", "clock"),
+                      "ماشینحساب" to listOf("com.miui.calculator", "com.google.android.calculator", "calculator"),
+                      "پیامک" to listOf("com.google.android.apps.messaging", "com.android.mms", "messages"),
+                      "تماس" to listOf("com.android.dialer", "com.android.contacts", "phone"),
+                      "یادداشت" to listOf("com.miui.notes", "com.google.android.keep", "notes"),
+                      "تقویم" to listOf("com.google.android.calendar", "com.android.calendar", "calendar"),
+                      "کیوی" to listOf("com.kiwibrowser.browser", "kiwi")
+                  )
+
+                  fun normalizeName(input: String): String {
+                      return input
+                          .lowercase()
+                          .replace('\u064a', '\u06cc')
+                          .replace('\u0643', '\u06a9')
+                          .replace('\u0622', '\u0627')
+                          .replace('\u0623', '\u0627')
+                          .replace('\u0625', '\u0627')
+                          .replace("\u200c", "")
+                          .replace(" ", "")
+                          .replace("-", "")
+                          .replace("_", "")
+                          .trim()
+                  }
+              }
+
+              private val lastElements = mutableListOf<UiElement>()
+
+              override fun onCreate() {
+                  super.onCreate()
+                  instance = this
+                  notifyListeners()
+              }
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+                  KeepAliveService.start(applicationContext)
+                  notifyListeners()
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+                  if (instance == null) {
+                      instance = this
+                      notifyListeners()
+                  }
+                  val pkg = event?.packageName?.toString()
+                  if (!pkg.isNullOrBlank() && pkg != "com.android.systemui") {
+                      lastObservedPackage = pkg
+                  }
+              }
+
+              override fun onInterrupt() {
+              }
+
+              override fun onUnbind(intent: Intent?): Boolean {
+                  if (instance === this) {
+                      instance = null
+                      KeepAliveService.stop(applicationContext)
+                      notifyListeners()
+                  }
+                  return super.onUnbind(intent)
+              }
+
+              override fun onDestroy() {
+                  if (instance === this) {
+                      instance = null
+                      KeepAliveService.stop(applicationContext)
+                      notifyListeners()
+                  }
+                  super.onDestroy()
+              }
+
+              fun getForegroundPackage(): String {
+                  val rootPkg = try { rootInActiveWindow?.packageName?.toString() } catch (_: Exception) { null }
+                  if (!rootPkg.isNullOrBlank()) {
+                      lastObservedPackage = rootPkg
+                      return rootPkg
+                  }
+                  return lastObservedPackage
+              }
+
+              fun getInstalledLaunchableApps(): List<AppEntry> {
+                  val intent = Intent(Intent.ACTION_MAIN, null).apply {
+                      addCategory(Intent.CATEGORY_LAUNCHER)
+                  }
+                  val resolved = try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                          packageManager.queryIntentActivities(
+                              intent,
+                              PackageManager.ResolveInfoFlags.of(0L)
+                          )
+                      } else {
+                          @Suppress("DEPRECATION")
+                          packageManager.queryIntentActivities(intent, 0)
+                      }
+                  } catch (_: Exception) {
+                      emptyList()
+                  }
+
+                  val seen = HashSet<String>()
+                  val apps = mutableListOf<AppEntry>()
+                  for (ri in resolved) {
+                      val pkg = ri.activityInfo?.packageName ?: continue
+                      if (pkg == packageName) continue
+                      if (!seen.add(pkg)) continue
+                      val label = try {
+                          ri.loadLabel(packageManager)?.toString()?.trim().orEmpty()
+                      } catch (_: Exception) {
+                          pkg
+                      }
+                      apps.add(AppEntry(label.ifEmpty { pkg }, pkg))
+                  }
+                  return apps.sortedBy { it.label.lowercase() }
+              }
+
+              fun buildRelevantAppsSummary(userGoal: String, maxApps: Int = 60): String {
+                  val all = getInstalledLaunchableApps()
+                  if (all.isEmpty()) return "هیچ برنامه قابل اجرایی یافت نشد."
+                  val normGoal = normalizeName(userGoal)
+                  val prioritized = mutableListOf<AppEntry>()
+                  val others = mutableListOf<AppEntry>()
+
+                  for (app in all) {
+                      val nLabel = normalizeName(app.label)
+                      val nPkg = normalizeName(app.packageName)
+                      val aliasHit = APP_ALIASES.entries.any { (k, vals) ->
+                          normGoal.contains(normalizeName(k)) &&
+                              vals.any { v -> nPkg.contains(normalizeName(v)) || nLabel.contains(normalizeName(v)) }
+                      }
+                      if (aliasHit || (nLabel.length >= 2 && normGoal.contains(nLabel))) {
+                          prioritized.add(app)
+                      } else {
+                          others.add(app)
+                      }
+                  }
+
+                  val combined = (prioritized + others).take(maxApps)
+                  return combined.joinToString("\n") { "- ${it.label} (${it.packageName})" }
+              }
+
+              suspend fun openUrl(rawUrl: String): ActionResult {
+                  val url = rawUrl.trim().let {
+                      if (it.startsWith("http://") || it.startsWith("https://")) it else "https://$it"
+                  }
+                  return try {
+                      val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                          addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      }
+                      startActivity(intent)
+                      delay(1200)
+                      ActionResult(true, "آدرس $url باز شد. صفحه فعلی: ${getForegroundPackage()}")
+                  } catch (e: Exception) {
+                      ActionResult(false, "خطا در باز کردن آدرس $url: ${e.message}")
+                  }
+              }
+
+              suspend fun openApp(query: String): ActionResult {
+                  val clean = query.trim()
+                  if (clean.isEmpty()) return ActionResult(false, "نام برنامه خالی است.")
+
+                  val apps = getInstalledLaunchableApps()
+                  val normQuery = normalizeName(clean)
+
+                  var matched: AppEntry? = apps.firstOrNull { it.packageName.equals(clean, ignoreCase = true) }
+
+                  if (matched == null) {
+                      val aliasTargets = mutableListOf<String>()
+                      for ((k, vals) in APP_ALIASES) {
+                          val nk = normalizeName(k)
+                          if (normQuery == nk || normQuery.contains(nk) || nk.contains(normQuery)) {
+                              aliasTargets.addAll(vals)
+                          }
+                      }
+                      for (target in aliasTargets) {
+                          val nt = normalizeName(target)
+                          matched = apps.firstOrNull {
+                              it.packageName.equals(target, ignoreCase = true) ||
+                                  normalizeName(it.packageName).contains(nt) ||
+                                  normalizeName(it.label).contains(nt)
+                          }
+                          if (matched != null) break
+                      }
+                  }
+
+                  if (matched == null) {
+                      matched = apps.firstOrNull { normalizeName(it.label) == normQuery }
+                  }
+
+                  if (matched == null) {
+                      matched = apps.firstOrNull {
+                          val nl = normalizeName(it.label)
+                          val np = normalizeName(it.packageName)
+                          nl.contains(normQuery) || (nl.length >= 3 && normQuery.contains(nl)) || np.contains(normQuery)
+                      }
+                  }
+
+                  val targetPkg = matched?.packageName ?: if (clean.contains(".")) clean else null
+                  val targetLabel = matched?.label ?: clean
+
+                  if (targetPkg == null) {
+                      return ActionResult(
+                          false,
+                          "برنامه «$clean» روی این گوشی نصب نیست یا در لیست برنامه‌های قابل اجرا یافت نشد."
+                      )
+                  }
+
+                  val launchIntent = packageManager.getLaunchIntentForPackage(targetPkg)
+                      ?: return ActionResult(
+                          false,
+                          "برنامه «$targetLabel» ($targetPkg) روی این گوشی نصب نیست یا قابل اجرا نیست."
+                      )
+
+                  return try {
+                      launchIntent.addFlags(
+                          Intent.FLAG_ACTIVITY_NEW_TASK or
+                              Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED or
+                              Intent.FLAG_ACTIVITY_CLEAR_TOP
+                      )
+                      startActivity(launchIntent)
+                      var switched = false
+                      var fg = getForegroundPackage()
+                      for (i in 0 until 10) {
+                          delay(250)
+                          fg = getForegroundPackage()
+                          if (fg == targetPkg || (fg.isNotBlank() && fg != packageName)) {
+                              switched = true
+                              break
+                          }
+                      }
+                      if (switched) {
+                          ActionResult(true, "برنامه «$targetLabel» ($targetPkg) باز شد. صفحه فعلی: $fg")
+                      } else {
+                          ActionResult(
+                              false,
+                              "فرمان باز کردن «$targetLabel» ($targetPkg) ارسال شد اما صفحه هنوز روی $fg مانده است."
+                          )
+                      }
+                  } catch (e: Exception) {
+                      ActionResult(false, "خطا در باز کردن «$targetLabel»: ${e.message}")
+                  }
+              }
+
+              fun captureSnapshot(): ScreenSnapshot {
+                  val root = rootInActiveWindow
+                  val fg = getForegroundPackage()
+                  val elements = mutableListOf<UiElement>()
+                  val sb = StringBuilder()
+
+                  if (root != null) {
+                      traverse(root, elements, 0)
+                  }
+
+                  lastElements.clear()
+                  lastElements.addAll(elements)
+
+                  for (el in elements) {
+                      val flags = buildString {
+                          if (el.clickable) append("C")
+                          if (el.editable) append("E")
+                          if (el.scrollable) append("S")
+                      }
+                      val label = buildString {
+                          if (el.text.isNotBlank()) append("t=\"${el.text.take(70)}\"")
+                          if (el.desc.isNotBlank() && el.desc != el.text) {
+                              if (isNotEmpty()) append(" ")
+                              append("d=\"${el.desc.take(60)}\"")
+                          }
+                          if (el.viewId.isNotBlank()) {
+                              if (isNotEmpty()) append(" ")
+                              append("id=${el.viewId}")
+                          }
+                      }
+                      val cx = el.bounds.centerX()
+                      val cy = el.bounds.centerY()
+                      sb.append("[${el.index}] ($flags) $label @($cx,$cy)\n")
+                  }
+
+                  val treeStr = sb.toString().ifBlank { "(هیچ المان قابل تعاملی روی صفحه خوانده نشد)" }
+                  return ScreenSnapshot(
+                      foregroundPackage = fg,
+                      elements = elements,
+                      compactTree = treeStr,
+                      hash = (fg + "|" + treeStr).hashCode()
+                  )
+              }
+
+              private fun traverse(node: AccessibilityNodeInfo, out: MutableList<UiElement>, depth: Int) {
+                  if (out.size >= 90 || depth > 28) return
+                  if (!node.isVisibleToUser) return
+
+                  val text = node.text?.toString()?.trim().orEmpty()
+                  val desc = node.contentDescription?.toString()?.trim().orEmpty()
+                  val rawId = node.viewIdResourceName?.substringAfterLast("/")?.trim().orEmpty()
+                  val cls = node.className?.toString()?.substringAfterLast(".")?.trim().orEmpty()
+                  val clickable = node.isClickable
+                  val editable = node.isEditable || cls.contains("EditText", ignoreCase = true)
+                  val scrollable = node.isScrollable
+
+                  val rect = Rect()
+                  node.getBoundsInScreen(rect)
+                  val validBounds = rect.width() > 4 && rect.height() > 4
+
+                  val keep = validBounds && (
+                      clickable || editable || scrollable || text.isNotBlank() || desc.isNotBlank()
+                  )
+
+                  if (keep) {
+                      out.add(
+                          UiElement(
+                              index = out.size,
+                              text = text.replace("\n", " "),
+                              desc = desc.replace("\n", " "),
+                              viewId = rawId,
+                              className = cls,
+                              clickable = clickable,
+                              editable = editable,
+                              scrollable = scrollable,
+                              bounds = rect
+                          )
+                      )
+                  }
+
+                  for (i in 0 until node.childCount) {
+                      val child = node.getChild(i) ?: continue
+                      traverse(child, out, depth + 1)
+                  }
+              }
+
+              private fun findNodeByBounds(root: AccessibilityNodeInfo?, target: Rect): AccessibilityNodeInfo? {
+                  if (root == null) return null
+                  val r = Rect()
+                  root.getBoundsInScreen(r)
+                  if (r == target) return root
+                  for (i in 0 until root.childCount) {
+                      val child = root.getChild(i) ?: continue
+                      val found = findNodeByBounds(child, target)
+                      if (found != null) return found
+                  }
+                  return null
+              }
+
+              suspend fun clickElement(index: Int?, x: Int?, y: Int?): ActionResult {
+                  val fg = getForegroundPackage()
+                  if (fg == packageName) {
+                      return ActionResult(
+                          false,
+                          "مسدود شد: صفحه فعلی خود اپلیکیشن ایجنت است. ابتدا با open_app یا open_url یا home از برنامه ایجنت خارج شو."
+                      )
+                  }
+
+                  if (index != null && index in lastElements.indices) {
+                      val el = lastElements[index]
+                      val node = findNodeByBounds(rootInActiveWindow, el.bounds)
+                      var cur = node
+                      while (cur != null) {
+                          if (cur.isClickable) {
+                              if (cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                                  return ActionResult(true, "کلیک روی [$index] (${el.text.ifBlank { el.desc.ifBlank { el.viewId } }})")
+                              }
+                              break
+                          }
+                          cur = cur.parent
+                      }
+                      val ok = tapAt(el.bounds.centerX().toFloat(), el.bounds.centerY().toFloat())
+                      return if (ok) {
+                          ActionResult(true, "لمس [$index] @(${el.bounds.centerX()},${el.bounds.centerY()})")
+                      } else {
+                          ActionResult(false, "کلیک روی [$index] ناموفق بود.")
+                      }
+                  }
+
+                  if (x != null && y != null) {
+                      val ok = tapAt(x.toFloat(), y.toFloat())
+                      return if (ok) ActionResult(true, "لمس مختصات @($x,$y)")
+                      else ActionResult(false, "لمس مختصات @($x,$y) ناموفق بود.")
+                  }
+
+                  return ActionResult(false, "شماره المان یا مختصات معتبر برای کلیک ارسال نشد.")
+              }
+
+              suspend fun longClickElement(index: Int?, x: Int?, y: Int?): ActionResult {
+                  val fg = getForegroundPackage()
+                  if (fg == packageName) {
+                      return ActionResult(false, "مسدود شد: صفحه فعلی خود ایجنت است.")
+                  }
+                  val tx: Float
+                  val ty: Float
+                  if (index != null && index in lastElements.indices) {
+                      val b = lastElements[index].bounds
+                      tx = b.centerX().toFloat()
+                      ty = b.centerY().toFloat()
+                  } else if (x != null && y != null) {
+                      tx = x.toFloat()
+                      ty = y.toFloat()
+                  } else {
+                      return ActionResult(false, "مختصات لمس طولانی معتبر نیست.")
+                  }
+                  val ok = gestureTap(tx, ty, 700L)
+                  return if (ok) ActionResult(true, "لمس طولانی انجام شد.") else ActionResult(false, "لمس طولانی ناموفق بود.")
+              }
+
+              suspend fun typeText(index: Int?, text: String, submit: Boolean): ActionResult {
+                  val fg = getForegroundPackage()
+                  if (fg == packageName) {
+                      return ActionResult(false, "مسدود شد: صفحه فعلی خود ایجنت است. نباید داخل چت ایجنت تایپ کنی.")
+                  }
+
+                  var targetNode: AccessibilityNodeInfo? = null
+                  if (index != null && index in lastElements.indices) {
+                      val el = lastElements[index]
+                      targetNode = findNodeByBounds(rootInActiveWindow, el.bounds)
+                      tapAt(el.bounds.centerX().toFloat(), el.bounds.centerY().toFloat())
+                      delay(280)
+                  }
+
+                  if (targetNode == null) {
+                      targetNode = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                  }
+
+                  if (targetNode == null) {
+                      val editable = lastElements.firstOrNull { it.editable }
+                      if (editable != null) {
+                          targetNode = findNodeByBounds(rootInActiveWindow, editable.bounds)
+                          tapAt(editable.bounds.centerX().toFloat(), editable.bounds.centerY().toFloat())
+                          delay(280)
+                      }
+                  }
+
+                  if (targetNode == null) {
+                      return ActionResult(false, "کادر متنی برای تایپ پیدا نشد.")
+                  }
+
+                  targetNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                  val args = Bundle().apply {
+                      putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                  }
+                  var typed = targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+
+                  if (!typed) {
+                      try {
+                          val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                          cm.setPrimaryClip(ClipData.newPlainText("agent_input", text))
+                          delay(150)
+                          typed = targetNode.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+                      } catch (_: Exception) {
+                      }
+                  }
+
+                  if (typed && submit && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                      delay(220)
+                      targetNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+                  }
+
+                  return if (typed) {
+                      ActionResult(true, "متن «$text» تایپ شد${if (submit) " و کلید Enter زده شد" else ""}.")
+                  } else {
+                      ActionResult(false, "تایپ متن در این کادر ناموفق بود.")
+                  }
+              }
+
+              suspend fun scroll(direction: String): ActionResult {
+                  val fg = getForegroundPackage()
+                  if (fg == packageName) {
+                      return ActionResult(false, "مسدود شد: صفحه فعلی خود ایجنت است.")
+                  }
+                  val dm = resources.displayMetrics
+                  val w = dm.widthPixels.toFloat()
+                  val h = dm.heightPixels.toFloat()
+                  val (x1, y1, x2, y2) = when (direction.lowercase()) {
+                      "down" -> listOf(w * 0.5f, h * 0.78f, w * 0.5f, h * 0.25f)
+                      "up" -> listOf(w * 0.5f, h * 0.25f, w * 0.5f, h * 0.78f)
+                      "left" -> listOf(w * 0.80f, h * 0.5f, w * 0.20f, h * 0.5f)
+                      "right" -> listOf(w * 0.20f, h * 0.5f, w * 0.80f, h * 0.5f)
+                      else -> listOf(w * 0.5f, h * 0.75f, w * 0.5f, h * 0.25f)
+                  }
+                  val ok = swipe(x1, y1, x2, y2, 340L)
+                  return if (ok) ActionResult(true, "اسکرول به سمت $direction انجام شد.")
+                  else ActionResult(false, "اسکرول ناموفق بود.")
+              }
+
+              fun goBack(): ActionResult {
+                  val ok = performGlobalAction(GLOBAL_ACTION_BACK)
+                  return if (ok) ActionResult(true, "دکمه بازگشت زده شد.") else ActionResult(false, "بازگشت ناموفق بود.")
+              }
+
+              fun goHome(): ActionResult {
+                  val ok = performGlobalAction(GLOBAL_ACTION_HOME)
+                  return if (ok) ActionResult(true, "به صفحه اصلی گوشی رفت.") else ActionResult(false, "رفتن به صفحه اصلی ناموفق بود.")
+              }
+
+              fun openRecents(): ActionResult {
+                  val ok = performGlobalAction(GLOBAL_ACTION_RECENTS)
+                  return if (ok) ActionResult(true, "برنامه‌های اخیر باز شد.") else ActionResult(false, "باز کردن برنامه‌های اخیر ناموفق بود.")
+              }
+
+              private suspend fun tapAt(x: Float, y: Float): Boolean = gestureTap(x, y, 75L)
+
+              private suspend fun gestureTap(x: Float, y: Float, durationMs: Long): Boolean {
+                  return suspendCancellableCoroutine { cont ->
+                      val path = Path().apply { moveTo(x, y) }
+                      val gesture = GestureDescription.Builder()
+                          .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs))
+                          .build()
+                      val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
+                          override fun onCompleted(gestureDescription: GestureDescription?) {
+                              if (cont.isActive) cont.resume(true)
+                          }
+                          override fun onCancelled(gestureDescription: GestureDescription?) {
+                              if (cont.isActive) cont.resume(false)
+                          }
+                      }, null)
+                      if (!dispatched && cont.isActive) cont.resume(false)
+                  }
+              }
+
+              private suspend fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long): Boolean {
+                  return suspendCancellableCoroutine { cont ->
+                      val path = Path().apply {
+                          moveTo(x1, y1)
+                          lineTo(x2, y2)
+                      }
+                      val gesture = GestureDescription.Builder()
+                          .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs))
+                          .build()
+                      val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
+                          override fun onCompleted(gestureDescription: GestureDescription?) {
+                              if (cont.isActive) cont.resume(true)
+                          }
+                          override fun onCancelled(gestureDescription: GestureDescription?) {
+                              if (cont.isActive) cont.resume(false)
+                          }
+                      }, null)
+                      if (!dispatched && cont.isActive) cont.resume(false)
+                  }
+              }
+
+              suspend fun captureScreenshotBase64(): String? {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+                  return suspendCancellableCoroutine { cont ->
+                      try {
+                          takeScreenshot(
+                              Display.DEFAULT_DISPLAY,
+                              mainExecutor,
+                              object : TakeScreenshotCallback {
+                                  override fun onSuccess(result: ScreenshotResult) {
+                                      try {
+                                          val hw = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
+                                          result.hardwareBuffer.close()
+                                          if (hw == null) {
+                                              if (cont.isActive) cont.resume(null)
+                                              return
+                                          }
+                                          val soft = hw.copy(Bitmap.Config.ARGB_8888, false)
+                                          hw.recycle()
+                                          val scale = 480f / maxOf(soft.width, 1)
+                                          val scaled = if (scale < 1f) {
+                                              Bitmap.createScaledBitmap(
+                                                  soft,
+                                                  480,
+                                                  (soft.height * scale).toInt().coerceAtLeast(1),
+                                                  true
+                                              ).also { soft.recycle() }
+                                          } else {
+                                              soft
+                                          }
+                                          val out = ByteArrayOutputStream()
+                                          scaled.compress(Bitmap.CompressFormat.JPEG, 48, out)
+                                          scaled.recycle()
+                                          val b64 = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+                                          if (cont.isActive) cont.resume(b64)
+                                      } catch (_: Exception) {
+                                          if (cont.isActive) cont.resume(null)
+                                      }
+                                  }
+
+                                  override fun onFailure(errorCode: Int) {
+                                      if (cont.isActive) cont.resume(null)
+                                  }
+                              }
+                          )
+                      } catch (_: Exception) {
+                          if (cont.isActive) cont.resume(null)
+                      }
+                  }
+              }
+          }
+          ''')
+
+          write(os.path.join(PKG_DIR, "GeminiClient.kt"), r'''
+          package com.aiagent.android
+
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.withContext
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.BufferedReader
+          import java.io.InputStreamReader
+          import java.io.OutputStreamWriter
+          import java.net.HttpURLConnection
+          import java.net.URL
+
+          data class ChecklistItem(
+              val task: String,
+              val done: Boolean
+          )
+
+          data class PlannedAction(
+              val type: String,
+              val index: Int? = null,
+              val x: Int? = null,
+              val y: Int? = null,
+              val text: String? = null,
+              val submit: Boolean = false,
+              val direction: String? = null,
+              val app: String? = null,
+              val url: String? = null,
+              val ms: Long? = null
+          )
+
+          data class AgentPlan(
+              val understanding: String,
+              val checklist: List<ChecklistItem>,
+              val currentSubtask: String,
+              val status: String,
+              val isPureQuestion: Boolean,
+              val reply: String,
+              val actions: List<PlannedAction>
+          )
+
+          class GeminiClient(
+              private val apiKey: String,
+              private val model: String
+          ) {
+              private val systemPrompt = """
+                  تو یک ایجنت هوشمند، دقیق، متمرکز و کاملاً صادق برای کنترل واقعی گوشی اندروید با مدل Gemini 4 Hydrogen هستی.
+                  هدف اصلی تو این است که منظور واقعی و کل پرامپت کاربر را کامل بفهمی، هیچ بخشی از آن را نادیده نگیری، وسط کار منحرف نشوی و کار واقعی را روی گوشی تا آخرین مرحله انجام دهی (نه اینکه فقط پیام متنی بدهی!).
+
+                  پاسخ تو باید فقط و فقط یک آبجکت JSON معتبر با این ساختار دقیق باشد:
+                  {
+                    "understanding": "برداشت دقیق از کل خواسته کاربر در یک جمله فارسی",
+                    "checklist": [
+                      {"task": "زیرکار اول", "done": true},
+                      {"task": "زیرکار دوم", "done": false}
+                    ],
+                    "current_subtask": "دقیقاً کدام زیرکار را الان انجام می‌دهی",
+                    "status": "continue" | "done" | "fail",
+                    "is_pure_question": false,
+                    "reply": "پیام نهایی فارسی در حالت done یا fail",
+                    "actions": [
+                      {"type": "open_app", "app": "نام یا packageName"}
+                    ]
+                  }
+
+                  اکشن‌های مجاز:
+                  - open_app: {"type":"open_app","app":"نام یا packageName از لیست برنامه‌های نصب‌شده"}
+                  - open_url: {"type":"open_url","url":"https://..."}
+                  - click: {"type":"click","index":N} یا {"type":"click","x":X,"y":Y}
+                  - long_click: {"type":"long_click","index":N}
+                  - type: {"type":"type","index":N,"text":"متن","submit":true/false}
+                  - scroll: {"type":"scroll","direction":"down"|"up"|"left"|"right"}
+                  - back: {"type":"back"}
+                  - home: {"type":"home"}
+                  - recents: {"type":"recents"}
+                  - wait: {"type":"wait","ms":1000}
+
+                  قوانین طلایی و بدون استثنا:
+                  1. در مرحله ۱ حتماً کل پرامپت کاربر را به زیرکارهای دقیق و کامل در checklist بشکن تا هیچ بخشی از دستور فراموش یا حذف نشود. در مراحل بعدی همین checklist را به‌روز نگه دار و فقط زیرکارهایی را done:true کن که نتیجه واقعی آن‌ها را در صفحه فعلی (اسکرین‌شات و ui_nodes) می‌بینی.
+                  2. هرگز وسط کار به سمت کار بی‌ربط نرو. در هر قدم فقط روی اولین زیرکارِ done:false تمرکز کن.
+                  3. هرگز به جای انجام کار واقعی روی گوشی، فقط پیام نده! فقط وقتی is_pure_question را true بگذار که کاربر صراحتاً یک سوال عمومی پرسیده و هیچ کاری روی گوشی نخواسته است.
+                  4. اگر foreground_package برابر com.aiagent.android است، هنوز داخل چت خود ایجنت هستی؛ هرگز روی المان‌های خود ایجنت click یا type نکن و اول با open_app یا open_url یا home وارد برنامه مقصد شو.
+                  5. در هر پاسخ حداکثر ۱ تا ۲ اکشن مطمئن بده. اگر اکشن open_app، scroll، back یا home می‌دهی، فقط همان ۱ اکشن را بده تا صفحه جدید را ببینی و اشتباه کلیک نکنی.
+                  6. قانون مطلق صداقت: تا وقتی همه موارد checklist واقعاً روی صفحه انجام نشده و done:true نشده‌اند، status را "done" نگذار. اگر برنامه‌ای نصب نیست یا کاری غیرممکن است، صادقانه status را "fail" بگذار و دلیل واقعی را به فارسی بگو.
+              """.trimIndent()
+
+              suspend fun planNextStep(
+                  userGoal: String,
+                  step: Int,
+                  maxSteps: Int,
+                  snapshot: ScreenSnapshot,
+                  checklist: List<ChecklistItem>,
+                  history: List<String>,
+                  installedAppsSummary: String?,
+                  screenshotBase64: String?,
+                  onStatus: ((String) -> Unit)? = null
+              ): AgentPlan = withContext(Dispatchers.IO) {
+                  val promptBuilder = StringBuilder()
+                  promptBuilder.append("دستور کامل کاربر (باید ۱۰۰٪ و بدون جا انداختن هیچ بخشی انجام شود):\n$userGoal\n\n")
+                  promptBuilder.append("مرحله: $step از $maxSteps\n")
+                  promptBuilder.append("foreground_package: ${snapshot.foregroundPackage}\n")
+
+                  if (checklist.isNotEmpty()) {
+                      promptBuilder.append("\nچک‌لیست فعلی زیرکارها:\n")
+                      checklist.forEachIndexed { idx, item ->
+                          val mark = if (item.done) "[x]" else "[ ]"
+                          promptBuilder.append("${idx + 1}. $mark ${item.task}\n")
+                      }
+                  }
+
+                  if (!installedAppsSummary.isNullOrBlank()) {
+                      promptBuilder.append("\nبرنامه‌های واقعی نصب‌شده روی گوشی:\n$installedAppsSummary\n")
+                  }
+
+                  if (history.isNotEmpty()) {
+                      promptBuilder.append("\nگزارش مراحل قبلی:\n")
+                      promptBuilder.append(history.takeLast(10).joinToString("\n"))
+                      promptBuilder.append("\n")
+                  }
+
+                  promptBuilder.append("\nالمان‌های فعلی صفحه (ui_nodes):\n")
+                  promptBuilder.append(snapshot.compactTree.take(7500))
+
+                  val parts = JSONArray().apply {
+                      put(JSONObject().put("text", promptBuilder.toString()))
+                      if (!screenshotBase64.isNullOrBlank()) {
+                          put(
+                              JSONObject().put(
+                                  "inline_data",
+                                  JSONObject()
+                                      .put("mime_type", "image/jpeg")
+                                      .put("data", screenshotBase64)
+                              )
+                          )
+                      }
+                  }
+
+                  val genConfig = JSONObject()
+                      .put("responseMimeType", "application/json")
+                      .put("responseSchema", buildResponseSchema())
+                  val lowerModel = model.trim().lowercase()
+                  if (lowerModel.contains("gemini-4") || lowerModel.contains("gemini-3")) {
+                      genConfig.put(
+                          "thinkingConfig",
+                          JSONObject().put("thinkingLevel", "LOW")
+                      )
+                  }
+
+                  val body = JSONObject()
+                      .put(
+                          "system_instruction",
+                          JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt)))
+                      )
+                      .put(
+                          "contents",
+                          JSONArray().put(JSONObject().put("role", "user").put("parts", parts))
+                      )
+                      .put("generationConfig", genConfig)
+
+                  val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/${model.trim()}:generateContent?key=${apiKey.trim()}"
+                  var lastErr: Exception? = null
+
+                  for (attempt in 1..4) {
+                      try {
+                          val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                              requestMethod = "POST"
+                              setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                              connectTimeout = 25000
+                              readTimeout = 90000
+                              doOutput = true
+                          }
+                          OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
+                          val code = conn.responseCode
+                          val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                          val rawResp = stream?.let { BufferedReader(InputStreamReader(it, Charsets.UTF_8)).readText() }.orEmpty()
+                          conn.disconnect()
+
+                          if (code in 200..299) {
+                              return@withContext parsePlan(rawResp)
+                          }
+                          if (code == 429 || code == 500 || code == 502 || code == 503 || code == 504) {
+                              lastErr = Exception("API $code: ${rawResp.take(180)}")
+                              onStatus?.invoke("🔄 خطای موقت $code — تلاش مجدد (${attempt + 1}/4)...")
+                              delay(attempt * 2000L)
+                              continue
+                          }
+                          throw Exception("API $code: ${rawResp.take(260)}")
+                      } catch (e: Exception) {
+                          lastErr = e
+                          val msg = e.message.orEmpty().lowercase()
+                          val retryable = msg.contains("timeout") || msg.contains("timed out") ||
+                              msg.contains("429") || msg.contains("503") || msg.contains("502") || msg.contains("500")
+                          if (retryable && attempt < 4) {
+                              onStatus?.invoke("🔄 تاخیر شبکه — تلاش مجدد (${attempt + 1}/4)...")
+                              delay(attempt * 2000L)
+                              continue
+                          }
+                          throw e
+                      }
+                  }
+                  throw lastErr ?: Exception("خطای ناشناخته در ارتباط با Gemini")
+              }
+
+              private fun buildResponseSchema(): JSONObject {
+                  val checklistItemProps = JSONObject()
+                      .put("task", JSONObject().put("type", "STRING"))
+                      .put("done", JSONObject().put("type", "BOOLEAN"))
+                  val checklistItemSchema = JSONObject()
+                      .put("type", "OBJECT")
+                      .put("properties", checklistItemProps)
+                      .put("required", JSONArray().put("task").put("done"))
+
+                  val actionProps = JSONObject()
+                      .put("type", JSONObject().put("type", "STRING"))
+                      .put("index", JSONObject().put("type", "INTEGER").put("nullable", true))
+                      .put("x", JSONObject().put("type", "INTEGER").put("nullable", true))
+                      .put("y", JSONObject().put("type", "INTEGER").put("nullable", true))
+                      .put("text", JSONObject().put("type", "STRING").put("nullable", true))
+                      .put("submit", JSONObject().put("type", "BOOLEAN").put("nullable", true))
+                      .put("direction", JSONObject().put("type", "STRING").put("nullable", true))
+                      .put("app", JSONObject().put("type", "STRING").put("nullable", true))
+                      .put("url", JSONObject().put("type", "STRING").put("nullable", true))
+                      .put("ms", JSONObject().put("type", "INTEGER").put("nullable", true))
+                  val actionSchema = JSONObject()
+                      .put("type", "OBJECT")
+                      .put("properties", actionProps)
+                      .put("required", JSONArray().put("type"))
+
+                  val rootProps = JSONObject()
+                      .put("understanding", JSONObject().put("type", "STRING"))
+                      .put("checklist", JSONObject().put("type", "ARRAY").put("items", checklistItemSchema))
+                      .put("current_subtask", JSONObject().put("type", "STRING"))
+                      .put(
+                          "status",
+                          JSONObject()
+                              .put("type", "STRING")
+                              .put("enum", JSONArray().put("continue").put("done").put("fail"))
+                      )
+                      .put("is_pure_question", JSONObject().put("type", "BOOLEAN"))
+                      .put("reply", JSONObject().put("type", "STRING"))
+                      .put("actions", JSONObject().put("type", "ARRAY").put("items", actionSchema))
+
+                  return JSONObject()
+                      .put("type", "OBJECT")
+                      .put("properties", rootProps)
+                      .put(
+                          "required",
+                          JSONArray()
+                              .put("understanding")
+                              .put("checklist")
+                              .put("current_subtask")
+                              .put("status")
+                              .put("is_pure_question")
+                              .put("reply")
+                              .put("actions")
+                      )
+              }
+
+              suspend fun testConnection(): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+                  val start = System.currentTimeMillis()
+                  try {
+                      val pingSchema = JSONObject()
+                          .put("type", "OBJECT")
+                          .put("properties", JSONObject().put("ok", JSONObject().put("type", "BOOLEAN")))
+                          .put("required", JSONArray().put("ok"))
+                      val genCfg = JSONObject()
+                          .put("responseMimeType", "application/json")
+                          .put("responseSchema", pingSchema)
+                          .put("maxOutputTokens", 128)
+                      val lowerModel = model.trim().lowercase()
+                      if (lowerModel.contains("gemini-4") || lowerModel.contains("gemini-3")) {
+                          genCfg.put("thinkingConfig", JSONObject().put("thinkingLevel", "LOW"))
+                      }
+                      val body = JSONObject()
+                          .put(
+                              "contents",
+                              JSONArray().put(
+                                  JSONObject()
+                                      .put("role", "user")
+                                      .put("parts", JSONArray().put(JSONObject().put("text", "Reply with ok true in JSON.")))
+                              )
+                          )
+                          .put("generationConfig", genCfg)
+
+                      val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/${model.trim()}:generateContent?key=${apiKey.trim()}"
+                      val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                          requestMethod = "POST"
+                          setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                          connectTimeout = 20000
+                          readTimeout = 35000
+                          doOutput = true
+                      }
+                      OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
+                      val code = conn.responseCode
+                      val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                      val rawResp = stream?.let { BufferedReader(InputStreamReader(it, Charsets.UTF_8)).readText() }.orEmpty()
+                      conn.disconnect()
+                      val elapsed = System.currentTimeMillis() - start
+
+                      if (code in 200..299) {
+                          Pair(true, "✅ اتصال به ${model.trim()} موفق بود (${elapsed}ms)")
+                      } else {
+                          val detail = try {
+                              JSONObject(rawResp).optJSONObject("error")?.optString("message").orEmpty()
+                          } catch (_: Exception) {
+                              rawResp.take(160)
+                          }
+                          Pair(false, "❌ خطای API ($code): ${detail.ifBlank { rawResp.take(160) }}")
+                      }
+                  } catch (e: Exception) {
+                      Pair(false, "❌ خطای شبکه/اتصال: ${e.message ?: "نامشخص"} (VPN را بررسی کن)")
+                  }
+              }
+
+              private fun parsePlan(rawResp: String): AgentPlan {
+                  val root = JSONObject(rawResp)
+                  val parts = root.getJSONArray("candidates")
+                      .getJSONObject(0)
+                      .getJSONObject("content")
+                      .getJSONArray("parts")
+
+                  var chosenText = ""
+                  for (i in 0 until parts.length()) {
+                      val p = parts.optJSONObject(i) ?: continue
+                      val t = p.optString("text", "")
+                      if (t.isNotBlank() && !p.optBoolean("thought", false)) {
+                          chosenText = t.trim()
+                          break
+                      }
+                  }
+                  if (chosenText.isBlank()) {
+                      for (i in parts.length() - 1 downTo 0) {
+                          val t = parts.optJSONObject(i)?.optString("text", "").orEmpty()
+                          if (t.isNotBlank()) {
+                              chosenText = t.trim()
+                              break
+                          }
+                      }
+                  }
+
+                  val cleaned = chosenText
+                      .removePrefix("```json")
+                      .removePrefix("```")
+                      .removeSuffix("```")
+                      .trim()
+
+                  val jsonStart = cleaned.indexOf('{')
+                  val jsonEnd = cleaned.lastIndexOf('}')
+                  val jsonStr = if (jsonStart >= 0 && jsonEnd > jsonStart) {
+                      cleaned.substring(jsonStart, jsonEnd + 1)
+                  } else cleaned
+
+                  val obj = JSONObject(jsonStr)
+
+                  val checklist = mutableListOf<ChecklistItem>()
+                  val clArr = obj.optJSONArray("checklist")
+                  if (clArr != null) {
+                      for (i in 0 until clArr.length()) {
+                          val c = clArr.optJSONObject(i) ?: continue
+                          val taskStr = c.optString("task", "").trim()
+                          if (taskStr.isNotBlank()) {
+                              checklist.add(ChecklistItem(taskStr, c.optBoolean("done", false)))
+                          }
+                      }
+                  }
+
+                  val actionsArr = obj.optJSONArray("actions") ?: JSONArray()
+                  val actions = mutableListOf<PlannedAction>()
+                  for (i in 0 until minOf(actionsArr.length(), 2)) {
+                      val a = actionsArr.optJSONObject(i) ?: continue
+                      actions.add(
+                          PlannedAction(
+                              type = a.optString("type", "").lowercase(),
+                              index = if (a.has("index") && !a.isNull("index")) a.optInt("index") else null,
+                              x = if (a.has("x") && !a.isNull("x")) a.optInt("x") else null,
+                              y = if (a.has("y") && !a.isNull("y")) a.optInt("y") else null,
+                              text = if (a.has("text") && !a.isNull("text")) a.optString("text") else null,
+                              submit = a.optBoolean("submit", false),
+                              direction = if (a.has("direction") && !a.isNull("direction")) a.optString("direction") else null,
+                              app = if (a.has("app") && !a.isNull("app")) a.optString("app") else null,
+                              url = if (a.has("url") && !a.isNull("url")) a.optString("url") else null,
+                              ms = if (a.has("ms") && !a.isNull("ms")) a.optLong("ms") else null
+                          )
+                      )
+                  }
+
+                  return AgentPlan(
+                      understanding = obj.optString("understanding", ""),
+                      checklist = checklist,
+                      currentSubtask = obj.optString("current_subtask", ""),
+                      status = obj.optString("status", "continue").lowercase(),
+                      isPureQuestion = obj.optBoolean("is_pure_question", false),
+                      reply = obj.optString("reply", ""),
+                      actions = actions
+                  )
+              }
+          }
+          ''')
+
+          write(os.path.join(PKG_DIR, "AgentRunner.kt"), r'''
+          package com.aiagent.android
+
+          import android.content.Context
+          import kotlinx.coroutines.CancellationException
+          import kotlinx.coroutines.delay
+
+          class AgentRunner(
+              private val context: Context,
+              private val apiKey: String,
+              private val model: String,
+              private val maxSteps: Int,
+              private val onUpdate: (String) -> Unit,
+              private val onLiveStatus: (String) -> Unit = {}
+          ) {
+              suspend fun run(userGoal: String): String {
+                  var service = AgentAccessibilityService.instance
+                  if (service == null && AccessibilityHelper.isEnabledInSettings(context)) {
+                      for (i in 0 until 10) {
+                          delay(250)
+                          service = AgentAccessibilityService.instance
+                          if (service != null) break
+                      }
+                  }
+
+                  if (service == null) {
+                      return when (AccessibilityHelper.getState(context)) {
+                          ServiceState.ENABLED_BUT_SUSPENDED ->
+                              "سرویس دسترسی در تنظیمات روشن است، اما سیستم گوشی اتصالش را در پس‌زمینه معلق کرده است. دکمه «اتصال مجدد» را بزن، کلید بالایی Android AI Agent Service را یک‌بار خاموش و روشن کن و از تنظیمات، گزینه «جلوگیری از قطع خودکار» را فعال کن."
+                          else ->
+                              "سرویس دسترسی (Accessibility) خاموش است. دکمه «روشن کردن» بالای صفحه را بزن و کلید بالایی Android AI Agent Service را فعال کن."
+                      }
+                  }
+
+                  val client = GeminiClient(apiKey, model)
+                  val history = mutableListOf<String>()
+                  var checklist = listOf<ChecklistItem>()
+                  val appsSummary = service.buildRelevantAppsSummary(userGoal)
+                  var lastHash = 0
+                  var sameHashCount = 0
+                  var realActionsDone = 0
+                  var rejectedDoneCount = 0
+                  var lastActionFailed = false
+
+                  for (step in 1..maxSteps) {
+                      onLiveStatus("🔍 مرحله $step از $maxSteps: در حال خواندن صفحه...")
+                      val snapshot = service.captureSnapshot()
+                      if (snapshot.hash == lastHash) {
+                          sameHashCount++
+                      } else {
+                          sameHashCount = 0
+                          lastHash = snapshot.hash
+                      }
+
+                      val inExternalApp = snapshot.foregroundPackage.isNotBlank() &&
+                          snapshot.foregroundPackage != context.packageName
+                      val screenshotB64 = if (inExternalApp || sameHashCount >= 2) {
+                          service.captureScreenshotBase64()
+                      } else null
+
+                      val appsForStep = if (step == 1 || lastActionFailed || !inExternalApp) appsSummary else null
+
+                      onLiveStatus("🤖 مرحله $step: در حال ارسال به $model (thinkingLevel: LOW)...")
+                      val plan = try {
+                          client.planNextStep(
+                              userGoal = userGoal,
+                              step = step,
+                              maxSteps = maxSteps,
+                              snapshot = snapshot,
+                              checklist = checklist,
+                              history = history,
+                              installedAppsSummary = appsForStep,
+                              screenshotBase64 = screenshotB64,
+                              onStatus = { st -> onLiveStatus(st) }
+                          )
+                      } catch (e: CancellationException) {
+                          throw e
+                      } catch (e: Exception) {
+                          return "خطا در مرحله $step: ${e.message}"
+                      }
+
+                      if (plan.checklist.isNotEmpty()) {
+                          checklist = plan.checklist
+                      }
+
+                      if (step == 1 && checklist.isNotEmpty()) {
+                          val planPreview = checklist.mapIndexed { i, c -> "${i + 1}. ${c.task}" }.joinToString("\n")
+                          onUpdate("📋 برنامه دقیق اجرا:\n$planPreview")
+                      }
+
+                      if (plan.status == "fail") {
+                          return plan.reply.ifBlank { plan.understanding.ifBlank { "انجام این دستور ممکن نشد." } }
+                      }
+
+                      if (plan.status == "done") {
+                          val pendingItems = checklist.filter { !it.done }
+                          val noRealWorkOnAction = (realActionsDone == 0 && !plan.isPureQuestion)
+
+                          if ((pendingItems.isNotEmpty() || noRealWorkOnAction || lastActionFailed) && rejectedDoneCount < 2) {
+                              rejectedDoneCount++
+                              val reason = when {
+                                  pendingItems.isNotEmpty() ->
+                                      "این زیرکارها هنوز انجام نشده‌اند: ${pendingItems.joinToString(" ، ") { it.task }}"
+                                  noRealWorkOnAction ->
+                                      "هنوز هیچ اقدام واقعی روی گوشی انجام نداده‌ای! باید کار واقعی را اجرا کنی نه فقط پیام بدهی."
+                                  else ->
+                                      "اکشن قبلی ناموفق بود؛ نمی‌توانی بدون انجام واقعی done بدهی."
+                              }
+                              history.add("مرحله $step: توقف زودهنگام رد شد — $reason")
+                              continue
+                          }
+                          return plan.reply.ifBlank { "✅ همه مراحل دستور با موفقیت انجام شد." }
+                      }
+
+                      if (plan.actions.isEmpty()) {
+                          history.add("مرحله $step: هیچ اکشنی برگردانده نشد؛ باید اقدام واقعی بدهی.")
+                          delay(350)
+                          continue
+                      }
+
+                      val label = plan.currentSubtask.ifBlank { plan.understanding }
+                      if (label.isNotBlank()) {
+                          onLiveStatus("⚡ مرحله $step: $label")
+                          onUpdate("⚡ مرحله $step: $label")
+                      }
+
+                      lastActionFailed = false
+                      for (act in plan.actions) {
+                          val res = when (act.type) {
+                              "open_app" -> service.openApp(act.app.orEmpty())
+                              "open_url" -> service.openUrl(act.url.orEmpty())
+                              "click" -> service.clickElement(act.index, act.x, act.y)
+                              "long_click" -> service.longClickElement(act.index, act.x, act.y)
+                              "type" -> service.typeText(act.index, act.text.orEmpty(), act.submit)
+                              "scroll" -> service.scroll(act.direction ?: "down")
+                              "back" -> service.goBack()
+                              "home" -> service.goHome()
+                              "recents" -> service.openRecents()
+                              "wait" -> {
+                                  delay((act.ms ?: 1000L).coerceIn(200L, 4000L))
+                                  ActionResult(true, "مکث انجام شد.")
+                              }
+                              else -> ActionResult(false, "اکشن ناشناخته: ${act.type}")
+                          }
+
+                          history.add("مرحله $step [${act.type}]: ${if (res.success) "موفق" else "ناموفق"} - ${res.message}")
+                          if (res.success) {
+                              realActionsDone++
+                          } else {
+                              lastActionFailed = true
+                              onUpdate("⚠️ ${res.message}")
+                              break
+                          }
+
+                          if (act.type == "open_app" || act.type == "open_url" || act.type == "scroll" || act.type == "back" || act.type == "home") {
+                              delay(550L)
+                              break
+                          } else {
+                              delay(400L)
+                          }
+                      }
+                  }
+
+                  return "حداکثر تعداد مراحل ($maxSteps) به پایان رسید و بخشی از کار هنوز باقی مانده است."
+              }
+          }
+          ''')
+
+          write(os.path.join(PKG_DIR, "GlassUi.kt"), r'''
+          package com.aiagent.android
+
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.LinearGradient
+          import android.graphics.Paint
+          import android.graphics.RadialGradient
+          import android.graphics.Shader
+          import android.graphics.drawable.GradientDrawable
+          import android.view.View
+
+          class GlassAuroraBackgroundView(context: Context) : View(context) {
+              private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val orb1Paint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val orb2Paint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val orb3Paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+              override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+                  super.onSizeChanged(w, h, oldw, oldh)
+                  if (w <= 0 || h <= 0) return
+                  bgPaint.shader = LinearGradient(
+                      0f, 0f, w.toFloat(), h.toFloat(),
+                      intArrayOf(
+                          Color.parseColor("#060918"),
+                          Color.parseColor("#0F1733"),
+                          Color.parseColor("#1A1038"),
+                          Color.parseColor("#091124")
+                      ),
+                      floatArrayOf(0f, 0.35f, 0.72f, 1f),
+                      Shader.TileMode.CLAMP
+                  )
+                  orb1Paint.shader = RadialGradient(
+                      w * 0.15f, h * 0.12f, w * 0.65f,
+                      Color.parseColor("#5538BDF8"),
+                      Color.TRANSPARENT,
+                      Shader.TileMode.CLAMP
+                  )
+                  orb2Paint.shader = RadialGradient(
+                      w * 0.88f, h * 0.42f, w * 0.70f,
+                      Color.parseColor("#558B5CF6"),
+                      Color.TRANSPARENT,
+                      Shader.TileMode.CLAMP
+                  )
+                  orb3Paint.shader = RadialGradient(
+                      w * 0.25f, h * 0.88f, w * 0.65f,
+                      Color.parseColor("#44EC4899"),
+                      Color.TRANSPARENT,
+                      Shader.TileMode.CLAMP
+                  )
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
+                  canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), orb1Paint)
+                  canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), orb2Paint)
+                  canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), orb3Paint)
+              }
+          }
+
+          object GlassStyle {
+              fun dp(context: Context, v: Int): Int = (v * context.resources.displayMetrics.density).toInt()
+
+              fun glassPanel(
+                  context: Context,
+                  fillHex: String = "#22FFFFFF",
+                  strokeHex: String = "#48FFFFFF",
+                  radiusDp: Int = 20,
+                  strokeWidthDp: Int = 1
+              ): GradientDrawable {
+                  return GradientDrawable().apply {
+                      setColor(Color.parseColor(fillHex))
+                      cornerRadius = dp(context, radiusDp).toFloat()
+                      setStroke(dp(context, strokeWidthDp).coerceAtLeast(1), Color.parseColor(strokeHex))
+                  }
+              }
+
+              fun glassGradientPanel(
+                  context: Context,
+                  startHex: String,
+                  endHex: String,
+                  strokeHex: String,
+                  radiusDp: Int = 20
+              ): GradientDrawable {
+                  return GradientDrawable(
+                      GradientDrawable.Orientation.TL_BR,
+                      intArrayOf(Color.parseColor(startHex), Color.parseColor(endHex))
+                  ).apply {
+                      cornerRadius = dp(context, radiusDp).toFloat()
+                      setStroke(dp(context, 1).coerceAtLeast(1), Color.parseColor(strokeHex))
+                  }
+              }
+          }
+          ''')
+
+          write(os.path.join(PKG_DIR, "MainActivity.kt"), r'''
+          package com.aiagent.android
+
+          import android.Manifest
+          import android.app.Dialog
+          import android.content.ClipData
+          import android.content.ClipboardManager
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.graphics.drawable.ColorDrawable
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup
+          import android.view.Window
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.app.ActivityCompat
+          import androidx.core.content.ContextCompat
+          import androidx.lifecycle.lifecycleScope
+          import kotlinx.coroutines.CancellationException
+          import kotlinx.coroutines.Job
+          import kotlinx.coroutines.launch
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.util.ArrayDeque
+
+          data class ChatMessage(
+              val id: Long,
+              val isUser: Boolean,
+              val text: String
+          )
+
+          data class ChatSession(
+              val id: String,
+              var title: String,
+              val messages: MutableList<ChatMessage>
+          )
+
+          class MainActivity : AppCompatActivity() {
+
+              companion object {
+                  private const val DEFAULT_MODEL = "gemini-4-hydrogen"
+              }
+
+              private val prefs by lazy { getSharedPreferences("agent_prefs_v20", MODE_PRIVATE) }
+              private val sessions = mutableListOf<ChatSession>()
+              private var currentSessionId: String = ""
+              private val commandQueue = ArrayDeque<String>()
+              private var runningJob: Job? = null
+              private var isProcessingQueue = false
+
+              private lateinit var statusBanner: TextView
+              private lateinit var statusActionBtn: Button
+              private lateinit var liveStatusTv: TextView
+              private lateinit var modelChip: TextView
+              private lateinit var chatScroll: ScrollView
+              private lateinit var chatContainer: LinearLayout
+              private lateinit var inputBox: EditText
+              private lateinit var sendBtn: Button
+              private lateinit var stopBtn: Button
+
+              private val connectionListener: () -> Unit = {
+                  runOnUiThread { updateAccessibilityBanner() }
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.decorView.layoutDirection = View.LAYOUT_DIRECTION_RTL
+                  window.statusBarColor = Color.parseColor("#060918")
+                  window.navigationBarColor = Color.parseColor("#091124")
+
+                  migrateOldApiKeyIfNeeded()
+                  requestNotificationPermissionIfNeeded()
+                  buildUi()
+                  loadSessions()
+                  renderChat()
+                  AgentAccessibilityService.addConnectionListener(connectionListener)
+                  updateAccessibilityBanner()
+                  if (AccessibilityHelper.isConnected()) {
+                      KeepAliveService.start(applicationContext)
+                  }
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  updateAccessibilityBanner()
+              }
+
+              override fun onWindowFocusChanged(hasFocus: Boolean) {
+                  super.onWindowFocusChanged(hasFocus)
+                  if (hasFocus) updateAccessibilityBanner()
+              }
+
+              override fun onDestroy() {
+                  AgentAccessibilityService.removeConnectionListener(connectionListener)
+                  super.onDestroy()
+              }
+
+              private fun migrateOldApiKeyIfNeeded() {
+                  if (prefs.getString("api_key", "").isNullOrBlank()) {
+                      val oldKey = getSharedPreferences("agent_prefs_v16", MODE_PRIVATE).getString("api_key", "")
+                      if (!oldKey.isNullOrBlank()) {
+                          prefs.edit().putString("api_key", oldKey).apply()
+                      }
+                  }
+              }
+
+              private fun requestNotificationPermissionIfNeeded() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                      if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                          != PackageManager.PERMISSION_GRANTED
+                      ) {
+                          ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+                      }
+                  }
+              }
+
+              private fun dp(v: Int): Int = GlassStyle.dp(this, v)
+
+              private fun currentSession(): ChatSession {
+                  val found = sessions.firstOrNull { it.id == currentSessionId }
+                  if (found != null) return found
+                  val created = ChatSession("chat_${System.currentTimeMillis()}", "صفحه جدید", mutableListOf())
+                  sessions.add(0, created)
+                  currentSessionId = created.id
+                  saveSessions()
+                  return created
+              }
+
+              private fun buildUi() {
+                  val frame = FrameLayout(this)
+                  frame.addView(
+                      GlassAuroraBackgroundView(this),
+                      FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.MATCH_PARENT
+                      )
+                  )
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      layoutDirection = View.LAYOUT_DIRECTION_RTL
+                      setPadding(dp(10), dp(10), dp(10), dp(10))
+                  }
+
+                  val header = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      background = GlassStyle.glassGradientPanel(
+                          this@MainActivity, "#2EFFFFFF", "#18FFFFFF", "#55FFFFFF", 20
+                      )
+                      setPadding(dp(12), dp(10), dp(12), dp(10))
+                  }
+
+                  val titleCol = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+
+                  val titleTv = TextView(this).apply {
+                      text = "ایجنت هوشمند ۲.۱"
+                      setTextColor(Color.WHITE)
+                      textSize = 16.5f
+                  }
+
+                  modelChip = TextView(this).apply {
+                      text = "⚡ ${prefs.getString("model", DEFAULT_MODEL)}"
+                      setTextColor(Color.parseColor("#7DD3FC"))
+                      textSize = 11f
+                  }
+
+                  titleCol.addView(titleTv)
+                  titleCol.addView(modelChip)
+
+                  val newChatBtn = makeGlassButton("+ جدید", "#3838BDF8", "#667DD3FC") {
+                      createNewSession()
+                  }
+
+                  val pagesBtn = makeGlassButton("صفحات", "#2AFFFFFF", "#50FFFFFF") {
+                      showSessionsDialog()
+                  }
+
+                  val settingsBtn = makeGlassButton("تنظیمات", "#2A8B5CF6", "#66C4B5FD") {
+                      showSettingsDialog()
+                  }
+
+                  header.addView(titleCol)
+                  header.addView(newChatBtn)
+                  header.addView(pagesBtn)
+                  header.addView(settingsBtn)
+                  root.addView(header)
+
+                  val statusRow = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      background = GlassStyle.glassPanel(this@MainActivity, "#1EFFFFFF", "#3DFFFFFF", 16)
+                      setPadding(dp(12), dp(7), dp(12), dp(7))
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = dp(8) }
+                  }
+
+                  statusBanner = TextView(this).apply {
+                      textSize = 12f
+                      setTextColor(Color.WHITE)
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+
+                  statusActionBtn = Button(this).apply {
+                      text = "روشن کردن"
+                      textSize = 11f
+                      isAllCaps = false
+                      setTextColor(Color.WHITE)
+                      background = GlassStyle.glassPanel(this@MainActivity, "#4438BDF8", "#807DD3FC", 12)
+                      setPadding(dp(10), dp(4), dp(10), dp(4))
+                      minHeight = 0
+                      minimumHeight = 0
+                      setOnClickListener { openAccessibilitySettings() }
+                  }
+
+                  statusRow.addView(statusBanner)
+                  statusRow.addView(statusActionBtn)
+                  root.addView(statusRow)
+
+                  liveStatusTv = TextView(this).apply {
+                      textSize = 12f
+                      setTextColor(Color.parseColor("#E0F2FE"))
+                      background = GlassStyle.glassGradientPanel(
+                          this@MainActivity, "#3338BDF8", "#338B5CF6", "#667DD3FC", 14
+                      )
+                      setPadding(dp(12), dp(7), dp(12), dp(7))
+                      visibility = View.GONE
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = dp(6) }
+                  }
+                  root.addView(liveStatusTv)
+
+                  chatScroll = ScrollView(this).apply {
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          0,
+                          1f
+                      ).apply {
+                          topMargin = dp(8)
+                          bottomMargin = dp(8)
+                      }
+                  }
+                  chatContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                  }
+                  chatScroll.addView(chatContainer)
+                  root.addView(chatScroll)
+
+                  val bottomBar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      background = GlassStyle.glassGradientPanel(
+                          this@MainActivity, "#28FFFFFF", "#16FFFFFF", "#50FFFFFF", 22
+                      )
+                      setPadding(dp(8), dp(8), dp(8), dp(8))
+                  }
+
+                  inputBox = EditText(this).apply {
+                      hint = "دستور کاملت را بنویس..."
+                      setHintTextColor(Color.parseColor("#CBD5E1"))
+                      setTextColor(Color.WHITE)
+                      background = GlassStyle.glassPanel(this@MainActivity, "#220F172A", "#35FFFFFF", 16)
+                      setPadding(dp(12), dp(10), dp(12), dp(10))
+                      textSize = 14f
+                      maxLines = 4
+                      layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                  }
+
+                  stopBtn = Button(this).apply {
+                      text = "توقف"
+                      textSize = 12f
+                      isAllCaps = false
+                      setTextColor(Color.WHITE)
+                      background = GlassStyle.glassPanel(this@MainActivity, "#66EF4444", "#99FCA5A5", 14)
+                      visibility = View.GONE
+                      setPadding(dp(10), dp(8), dp(10), dp(8))
+                      minWidth = 0
+                      minimumWidth = 0
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { marginStart = dp(6) }
+                      setOnClickListener { stopCurrentTask() }
+                  }
+
+                  sendBtn = Button(this).apply {
+                      text = "ارسال"
+                      textSize = 13f
+                      isAllCaps = false
+                      setTextColor(Color.WHITE)
+                      background = GlassStyle.glassGradientPanel(
+                          this@MainActivity, "#8838BDF8", "#888B5CF6", "#AAFFFFFF", 14
+                      )
+                      setPadding(dp(14), dp(8), dp(14), dp(8))
+                      minWidth = 0
+                      minimumWidth = 0
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { marginStart = dp(6) }
+                      setOnClickListener { onSendClicked() }
+                  }
+
+                  bottomBar.addView(inputBox)
+                  bottomBar.addView(stopBtn)
+                  bottomBar.addView(sendBtn)
+                  root.addView(bottomBar)
+
+                  frame.addView(
+                      root,
+                      FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.MATCH_PARENT
+                      )
+                  )
+                  setContentView(frame)
+              }
+
+              private fun makeGlassButton(label: String, fill: String, stroke: String, onClick: () -> Unit): Button {
+                  return Button(this).apply {
+                      text = label
+                      textSize = 11.5f
+                      isAllCaps = false
+                      setTextColor(Color.WHITE)
+                      background = GlassStyle.glassPanel(this@MainActivity, fill, stroke, 12)
+                      setPadding(dp(9), dp(5), dp(9), dp(5))
+                      minWidth = 0
+                      minimumWidth = 0
+                      minHeight = 0
+                      minimumHeight = 0
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { marginStart = dp(6) }
+                      setOnClickListener { onClick() }
+                  }
+              }
+
+              private fun updateAccessibilityBanner() {
+                  when (AccessibilityHelper.getState(this)) {
+                      ServiceState.CONNECTED -> {
+                          val batteryOk = AccessibilityHelper.isIgnoringBatteryOptimizations(this)
+                          statusBanner.text = if (batteryOk) {
+                              "🟢 دسترس‌پذیری فعال و محافظت‌شده در پس‌زمینه"
+                          } else {
+                              "🟢 دسترس‌پذیری فعال است (برای جلوگیری از قطع خودکار، باتری را بدون محدودیت کن)"
+                          }
+                          statusBanner.setTextColor(Color.parseColor("#86EFAC"))
+                          if (batteryOk) {
+                              statusActionBtn.visibility = View.GONE
+                          } else {
+                              statusActionBtn.text = "حفظ اتصال"
+                              statusActionBtn.setOnClickListener { requestIgnoreBatteryOptimizations() }
+                              statusActionBtn.visibility = View.VISIBLE
+                          }
+                      }
+                      ServiceState.ENABLED_BUT_SUSPENDED -> {
+                          statusBanner.text = "🟡 در تنظیمات روشن است ولی سیستم اتصالش را معلق کرده"
+                          statusBanner.setTextColor(Color.parseColor("#FDE047"))
+                          statusActionBtn.text = "اتصال مجدد"
+                          statusActionBtn.setOnClickListener { openAccessibilitySettings() }
+                          statusActionBtn.visibility = View.VISIBLE
+                      }
+                      ServiceState.DISABLED -> {
+                          statusBanner.text = "🔴 سرویس دسترس‌پذیری خاموش است"
+                          statusBanner.setTextColor(Color.parseColor("#FCA5A5"))
+                          statusActionBtn.text = "روشن کردن"
+                          statusActionBtn.setOnClickListener { openAccessibilitySettings() }
+                          statusActionBtn.visibility = View.VISIBLE
+                      }
+                  }
+              }
+
+              private fun openAccessibilitySettings() {
+                  try {
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  } catch (_: Exception) {
+                      Toast.makeText(this, "باز کردن تنظیمات دسترسی ناموفق بود", Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              private fun requestIgnoreBatteryOptimizations() {
+                  try {
+                      val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                          data = Uri.parse("package:$packageName")
+                      }
+                      startActivity(intent)
+                  } catch (_: Exception) {
+                      openAppDetailsSettings()
+                  }
+              }
+
+              private fun openAppDetailsSettings() {
+                  try {
+                      val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                          data = Uri.fromParts("package", packageName, null)
+                      }
+                      startActivity(intent)
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun createGlassDialog(title: String, contentBuilder: (LinearLayout, Dialog) -> Unit) {
+                  val dialog = Dialog(this)
+                  dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+                  dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+
+                  val card = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      layoutDirection = View.LAYOUT_DIRECTION_RTL
+                      background = GlassStyle.glassGradientPanel(
+                          this@MainActivity, "#E6121A36", "#E61E1442", "#66FFFFFF", 24
+                      )
+                      setPadding(dp(18), dp(16), dp(18), dp(16))
+                  }
+
+                  val titleTv = TextView(this).apply {
+                      text = title
+                      setTextColor(Color.WHITE)
+                      textSize = 17f
+                      setPadding(0, 0, 0, dp(10))
+                  }
+                  card.addView(titleTv)
+                  contentBuilder(card, dialog)
+
+                  val scroll = ScrollView(this).apply { addView(card) }
+                  dialog.setContentView(scroll)
+                  dialog.window?.setLayout(
+                      (resources.displayMetrics.widthPixels * 0.92).toInt(),
+                      ViewGroup.LayoutParams.WRAP_CONTENT
+                  )
+                  dialog.show()
+              }
+
+              private fun showSettingsDialog() {
+                  createGlassDialog("⚙️ تنظیمات شیشه‌ای ایجنت") { container, dialog ->
+                      fun styledInput(hintText: String, initial: String): EditText {
+                          return EditText(this).apply {
+                              hint = hintText
+                              setHintTextColor(Color.parseColor("#94A3B8"))
+                              setTextColor(Color.WHITE)
+                              setText(initial)
+                              background = GlassStyle.glassPanel(this@MainActivity, "#24FFFFFF", "#44FFFFFF", 14)
+                              setPadding(dp(12), dp(10), dp(12), dp(10))
+                              textSize = 13.5f
+                              layoutParams = LinearLayout.LayoutParams(
+                                  ViewGroup.LayoutParams.MATCH_PARENT,
+                                  ViewGroup.LayoutParams.WRAP_CONTENT
+                              ).apply { bottomMargin = dp(10) }
+                          }
+                      }
+
+                      fun label(t: String): TextView = TextView(this).apply {
+                          text = t
+                          setTextColor(Color.parseColor("#CBD5E1"))
+                          textSize = 12.5f
+                          setPadding(0, dp(2), 0, dp(4))
+                      }
+
+                      val keyInput = styledInput("کلید Gemini API", prefs.getString("api_key", "").orEmpty())
+                      val modelInput = styledInput("مدل (پیش‌فرض: $DEFAULT_MODEL)", prefs.getString("model", DEFAULT_MODEL).orEmpty())
+                      val stepsInput = styledInput("حداکثر مراحل (پیش‌فرض: 40)", prefs.getInt("max_steps", 40).toString())
+
+                      container.addView(label("کلید Gemini API:"))
+                      container.addView(keyInput)
+                      container.addView(label("مدل هوش مصنوعی (جمینی هیدروژن):"))
+                      container.addView(modelInput)
+                      container.addView(label("حداکثر مراحل:"))
+                      container.addView(stepsInput)
+
+                      val testResultTv = TextView(this).apply {
+                          textSize = 12f
+                          setTextColor(Color.parseColor("#E2E8F0"))
+                          visibility = View.GONE
+                          setPadding(dp(8), dp(6), dp(8), dp(6))
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(8) }
+                      }
+
+                      val testConnBtn = Button(this).apply {
+                          text = "🔌 تست اتصال به مدل"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassGradientPanel(
+                              this@MainActivity, "#4422C55E", "#4406B6D4", "#8086EFAC", 14
+                          )
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(8) }
+                          setOnClickListener {
+                              val k = keyInput.text.toString().trim()
+                              val m = modelInput.text.toString().trim().ifEmpty { DEFAULT_MODEL }
+                              if (k.isEmpty()) {
+                                  testResultTv.text = "⚠️ ابتدا کلید Gemini API را وارد کن"
+                                  testResultTv.setTextColor(Color.parseColor("#FDE047"))
+                                  testResultTv.visibility = View.VISIBLE
+                                  return@setOnClickListener
+                              }
+                              this@apply.isEnabled = false
+                              testResultTv.text = "⏳ در حال تست اتصال به $m..."
+                              testResultTv.setTextColor(Color.parseColor("#7DD3FC"))
+                              testResultTv.visibility = View.VISIBLE
+                              lifecycleScope.launch {
+                                  val (ok, msg) = GeminiClient(k, m).testConnection()
+                                  testResultTv.text = msg
+                                  testResultTv.setTextColor(
+                                      if (ok) Color.parseColor("#86EFAC") else Color.parseColor("#FCA5A5")
+                                  )
+                                  this@apply.isEnabled = true
+                              }
+                          }
+                      }
+
+                      container.addView(testConnBtn)
+                      container.addView(testResultTv)
+
+                      val accBtn = Button(this).apply {
+                          text = "🔓 باز کردن تنظیمات دسترس‌پذیری"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassPanel(this@MainActivity, "#3338BDF8", "#667DD3FC", 14)
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(8) }
+                          setOnClickListener { openAccessibilitySettings() }
+                      }
+
+                      val keepBtn = Button(this).apply {
+                          text = "🛡️ جلوگیری از قطع خودکار (حذف محدودیت باتری)"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassPanel(this@MainActivity, "#3322C55E", "#6686EFAC", 14)
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(8) }
+                          setOnClickListener { requestIgnoreBatteryOptimizations() }
+                      }
+
+                      val xiaomiBtn = Button(this).apply {
+                          text = "⚙️ تنظیمات Autostart و پس‌زمینه (شیائومی)"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassPanel(this@MainActivity, "#28FFFFFF", "#50FFFFFF", 14)
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(12) }
+                          setOnClickListener { openAppDetailsSettings() }
+                      }
+
+                      container.addView(accBtn)
+                      container.addView(keepBtn)
+                      container.addView(xiaomiBtn)
+
+                      val btnRow = LinearLayout(this).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          gravity = Gravity.END
+                      }
+
+                      val saveBtn = Button(this).apply {
+                          text = "ذخیره تنظیمات"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassGradientPanel(
+                              this@MainActivity, "#8838BDF8", "#888B5CF6", "#AAFFFFFF", 14
+                          )
+                          setPadding(dp(16), dp(8), dp(16), dp(8))
+                          setOnClickListener {
+                              val newModel = modelInput.text.toString().trim().ifEmpty { DEFAULT_MODEL }
+                              prefs.edit()
+                                  .putString("api_key", keyInput.text.toString().trim())
+                                  .putString("model", newModel)
+                                  .putInt("max_steps", stepsInput.text.toString().toIntOrNull()?.coerceIn(5, 60) ?: 40)
+                                  .apply()
+                              modelChip.text = "⚡ $newModel"
+                              Toast.makeText(this@MainActivity, "تنظیمات ذخیره شد", Toast.LENGTH_SHORT).show()
+                              dialog.dismiss()
+                          }
+                      }
+
+                      val closeBtn = Button(this).apply {
+                          text = "بستن"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassPanel(this@MainActivity, "#26FFFFFF", "#44FFFFFF", 14)
+                          setPadding(dp(14), dp(8), dp(14), dp(8))
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.WRAP_CONTENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { marginStart = dp(8) }
+                          setOnClickListener { dialog.dismiss() }
+                      }
+
+                      btnRow.addView(saveBtn)
+                      btnRow.addView(closeBtn)
+                      container.addView(btnRow)
+                  }
+              }
+
+              private fun showSessionsDialog() {
+                  createGlassDialog("🗂️ صفحات گفتگو") { container, dialog ->
+                      val newBtn = Button(this).apply {
+                          text = "+ باز کردن صفحه جدید"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassGradientPanel(
+                              this@MainActivity, "#7738BDF8", "#778B5CF6", "#99FFFFFF", 14
+                          )
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(10) }
+                          setOnClickListener {
+                              createNewSession()
+                              dialog.dismiss()
+                          }
+                      }
+                      container.addView(newBtn)
+
+                      val clearCurrentBtn = Button(this).apply {
+                          text = "🗑️ پاک کردن پیام‌های صفحه فعلی"
+                          isAllCaps = false
+                          setTextColor(Color.parseColor("#FCA5A5"))
+                          background = GlassStyle.glassPanel(this@MainActivity, "#28EF4444", "#55FCA5A5", 14)
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(12) }
+                          setOnClickListener {
+                              currentSession().messages.clear()
+                              saveSessions()
+                              renderChat()
+                              dialog.dismiss()
+                          }
+                      }
+                      container.addView(clearCurrentBtn)
+
+                      for (s in sessions.toList()) {
+                          val isCurrent = s.id == currentSessionId
+                          val row = LinearLayout(this).apply {
+                              orientation = LinearLayout.HORIZONTAL
+                              gravity = Gravity.CENTER_VERTICAL
+                              background = GlassStyle.glassPanel(
+                                  this@MainActivity,
+                                  if (isCurrent) "#4438BDF8" else "#20FFFFFF",
+                                  if (isCurrent) "#997DD3FC" else "#3DFFFFFF",
+                                  14
+                              )
+                              setPadding(dp(12), dp(10), dp(10), dp(10))
+                              layoutParams = LinearLayout.LayoutParams(
+                                  ViewGroup.LayoutParams.MATCH_PARENT,
+                                  ViewGroup.LayoutParams.WRAP_CONTENT
+                              ).apply { bottomMargin = dp(8) }
+                              setOnClickListener {
+                                  currentSessionId = s.id
+                                  saveSessions()
+                                  renderChat()
+                                  dialog.dismiss()
+                              }
+                          }
+
+                          val titleTv = TextView(this).apply {
+                              text = "${if (isCurrent) "● " else ""}${s.title} (${s.messages.size})"
+                              setTextColor(Color.WHITE)
+                              textSize = 13.5f
+                              layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                          }
+
+                          val delTv = TextView(this).apply {
+                              text = " ✕ "
+                              setTextColor(Color.parseColor("#FCA5A5"))
+                              textSize = 14f
+                              setPadding(dp(8), dp(2), dp(4), dp(2))
+                              setOnClickListener {
+                                  sessions.removeAll { it.id == s.id }
+                                  if (sessions.isEmpty()) {
+                                      createNewSession()
+                                  } else if (currentSessionId == s.id) {
+                                      currentSessionId = sessions.first().id
+                                  }
+                                  saveSessions()
+                                  renderChat()
+                                  dialog.dismiss()
+                              }
+                          }
+
+                          row.addView(titleTv)
+                          row.addView(delTv)
+                          container.addView(row)
+                      }
+                  }
+              }
+
+              private fun createNewSession() {
+                  val created = ChatSession("chat_${System.currentTimeMillis()}", "صفحه جدید", mutableListOf())
+                  sessions.add(0, created)
+                  currentSessionId = created.id
+                  saveSessions()
+                  renderChat()
+                  Toast.makeText(this, "صفحه گفتگوی جدید باز شد", Toast.LENGTH_SHORT).show()
+              }
+
+              private fun copyToClipboard(text: String) {
+                  try {
+                      val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                      cm.setPrimaryClip(ClipData.newPlainText("agent_message", text))
+                      Toast.makeText(this, "پیام کپی شد", Toast.LENGTH_SHORT).show()
+                  } catch (_: Exception) {
+                  }
+              }
+
+              private fun onSendClicked() {
+                  val cmd = inputBox.text.toString().trim()
+                  if (cmd.isEmpty()) return
+
+                  val apiKey = prefs.getString("api_key", "").orEmpty().trim()
+                  if (apiKey.isEmpty()) {
+                      Toast.makeText(this, "ابتدا از بخش تنظیمات، کلید Gemini API را وارد کن", Toast.LENGTH_LONG).show()
+                      showSettingsDialog()
+                      return
+                  }
+
+                  inputBox.setText("")
+                  val session = currentSession()
+                  if (session.messages.isEmpty() || session.title == "صفحه جدید") {
+                      session.title = cmd.take(28)
+                  }
+                  addMessage(isUser = true, text = cmd)
+                  commandQueue.addLast(cmd)
+
+                  if (isProcessingQueue) {
+                      addMessage(isUser = false, text = "⏳ در صف قرار گرفت؛ بلافاصله بعد از کار فعلی اجرا می‌شود.")
+                  } else {
+                      processQueue()
+                  }
+              }
+
+              private fun processQueue() {
+                  if (isProcessingQueue) return
+                  isProcessingQueue = true
+                  stopBtn.visibility = View.VISIBLE
+
+                  runningJob = lifecycleScope.launch {
+                      try {
+                          while (commandQueue.isNotEmpty()) {
+                              val goal = commandQueue.removeFirst()
+                              val apiKey = prefs.getString("api_key", "").orEmpty().trim()
+                              val model = prefs.getString("model", DEFAULT_MODEL).orEmpty().trim().ifEmpty { DEFAULT_MODEL }
+                              val maxSteps = prefs.getInt("max_steps", 40)
+
+                              runOnUiThread {
+                                  liveStatusTv.text = "🚀 شروع اجرای دستور با $model..."
+                                  liveStatusTv.visibility = View.VISIBLE
+                              }
+                              val runner = AgentRunner(
+                                  context = this@MainActivity,
+                                  apiKey = apiKey,
+                                  model = model,
+                                  maxSteps = maxSteps,
+                                  onUpdate = { stepMsg ->
+                                      runOnUiThread { addMessage(isUser = false, text = stepMsg) }
+                                  },
+                                  onLiveStatus = { statusText ->
+                                      runOnUiThread {
+                                          liveStatusTv.text = statusText
+                                          liveStatusTv.visibility = View.VISIBLE
+                                      }
+                                  }
+                              )
+                              val finalResult = runner.run(goal)
+                              addMessage(isUser = false, text = finalResult)
+                          }
+                      } catch (_: CancellationException) {
+                          addMessage(isUser = false, text = "⛔ اجرای دستور متوقف شد.")
+                      } finally {
+                          isProcessingQueue = false
+                          stopBtn.visibility = View.GONE
+                          liveStatusTv.visibility = View.GONE
+                          updateAccessibilityBanner()
+                      }
+                  }
+              }
+
+              private fun stopCurrentTask() {
+                  commandQueue.clear()
+                  runningJob?.cancel()
+              }
+
+              private fun addMessage(isUser: Boolean, text: String) {
+                  currentSession().messages.add(ChatMessage(System.nanoTime(), isUser, text))
+                  saveSessions()
+                  renderChat()
+              }
+
+              private fun deleteMessage(id: Long) {
+                  currentSession().messages.removeAll { it.id == id }
+                  saveSessions()
+                  renderChat()
+              }
+
+              private fun renderChat() {
+                  chatContainer.removeAllViews()
+                  val msgs = currentSession().messages
+                  if (msgs.isEmpty()) {
+                      val emptyCard = TextView(this).apply {
+                          text = "✨ آماده اجرای دقیق دستورات با Gemini 4 Hydrogen\n\nدستور کاملت را پایین بنویس تا مرحله‌به‌مرحله و واقعی روی گوشی انجام شود."
+                          setTextColor(Color.parseColor("#E2E8F0"))
+                          textSize = 13.5f
+                          gravity = Gravity.CENTER
+                          background = GlassStyle.glassPanel(this@MainActivity, "#1EFFFFFF", "#3BFFFFFF", 20)
+                          setPadding(dp(18), dp(20), dp(18), dp(20))
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { topMargin = dp(24) }
+                      }
+                      chatContainer.addView(emptyCard)
+                      return
+                  }
+
+                  for (msg in msgs) {
+                      val row = LinearLayout(this).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          gravity = if (msg.isUser) Gravity.START else Gravity.END
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply {
+                              topMargin = dp(5)
+                              bottomMargin = dp(5)
+                          }
+                      }
+
+                      val bubble = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          background = if (msg.isUser) {
+                              GlassStyle.glassGradientPanel(
+                                  this@MainActivity, "#5538BDF8", "#556366F1", "#88A5F3FC", 18
+                              )
+                          } else {
+                              GlassStyle.glassGradientPanel(
+                                  this@MainActivity, "#2EFFFFFF", "#1A1E293B", "#4DFFFFFF", 18
+                              )
+                          }
+                          setPadding(dp(12), dp(9), dp(12), dp(7))
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.WRAP_CONTENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          )
+                      }
+
+                      val tv = TextView(this).apply {
+                          text = msg.text
+                          setTextColor(Color.WHITE)
+                          textSize = 13.5f
+                          setTextIsSelectable(true)
+                          maxWidth = (resources.displayMetrics.widthPixels * 0.78).toInt()
+                      }
+
+                      val actionsRow = LinearLayout(this).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          gravity = Gravity.END
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { topMargin = dp(6) }
+                      }
+
+                      val copyBtn = TextView(this).apply {
+                          text = "کپی"
+                          setTextColor(Color.parseColor("#BAE6FD"))
+                          textSize = 11f
+                          background = GlassStyle.glassPanel(this@MainActivity, "#22FFFFFF", "#40FFFFFF", 8)
+                          setPadding(dp(8), dp(2), dp(8), dp(2))
+                          setOnClickListener { copyToClipboard(msg.text) }
+                      }
+
+                      val delBtn = TextView(this).apply {
+                          text = "حذف ✕"
+                          setTextColor(Color.parseColor("#FCA5A5"))
+                          textSize = 11f
+                          background = GlassStyle.glassPanel(this@MainActivity, "#22EF4444", "#44FCA5A5", 8)
+                          setPadding(dp(8), dp(2), dp(8), dp(2))
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.WRAP_CONTENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { marginStart = dp(6) }
+                          setOnClickListener { deleteMessage(msg.id) }
+                      }
+
+                      actionsRow.addView(copyBtn)
+                      actionsRow.addView(delBtn)
+
+                      bubble.addView(tv)
+                      bubble.addView(actionsRow)
+                      row.addView(bubble)
+                      chatContainer.addView(row)
+                  }
+                  chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
+              }
+
+              private fun saveSessions() {
+                  val arr = JSONArray()
+                  for (s in sessions.take(30)) {
+                      val mArr = JSONArray()
+                      for (m in s.messages.takeLast(120)) {
+                          mArr.put(
+                              JSONObject()
+                                  .put("id", m.id)
+                                  .put("isUser", m.isUser)
+                                  .put("text", m.text)
+                          )
+                      }
+                      arr.put(
+                          JSONObject()
+                              .put("id", s.id)
+                              .put("title", s.title)
+                              .put("messages", mArr)
+                      )
+                  }
+                  prefs.edit()
+                      .putString("sessions_json", arr.toString())
+                      .putString("current_session_id", currentSessionId)
+                      .apply()
+              }
+
+              private fun loadSessions() {
+                  val raw = prefs.getString("sessions_json", null)
+                  currentSessionId = prefs.getString("current_session_id", "").orEmpty()
+                  sessions.clear()
+                  if (!raw.isNullOrBlank()) {
+                      try {
+                          val arr = JSONArray(raw)
+                          for (i in 0 until arr.length()) {
+                              val o = arr.getJSONObject(i)
+                              val msgs = mutableListOf<ChatMessage>()
+                              val mArr = o.optJSONArray("messages")
+                              if (mArr != null) {
+                                  for (j in 0 until mArr.length()) {
+                                      val mo = mArr.getJSONObject(j)
+                                      msgs.add(
+                                          ChatMessage(
+                                              id = mo.optLong("id", System.nanoTime() + j),
+                                              isUser = mo.optBoolean("isUser", false),
+                                              text = mo.optString("text", "")
+                                          )
+                                      )
+                                  }
+                              }
+                              sessions.add(
+                                  ChatSession(
+                                      id = o.optString("id", "chat_$i"),
+                                      title = o.optString("title", "صفحه گفتگو"),
+                                      messages = msgs
+                                  )
+                              )
+                          }
+                      } catch (_: Exception) {
+                      }
+                  }
+                  if (sessions.isEmpty()) {
+                      val initial = ChatSession("chat_${System.currentTimeMillis()}", "صفحه جدید", mutableListOf())
+                      sessions.add(initial)
+                      currentSessionId = initial.id
+                  }
+              }
+          }
+          ''')
+
+          print("Generated Android AI Agent v2.1 successfully.")
+          PYEOF
+
+      - name: Generate Release Keystore
+        working-directory: AndroidAIAgentApp/app
+        run: |
+          keytool -genkeypair -v \
+            -keystore release.keystore \
+            -alias agentkey \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass agentpass123 -keypass agentpass123 \
+            -dname "CN=AndroidAIAgent, OU=Dev, O=Personal, L=Tehran, S=Tehran, C=IR"
+
+      - name: Build Signed Release APK
+        working-directory: AndroidAIAgentApp
+        run: gradle assembleRelease --no-daemon
+
+      - name: Upload Signed Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AndroidAIAgent-v2.1-APK
+          path: AndroidAIAgentApp/app/build/outputs/apk/release/app-release.apk
+
