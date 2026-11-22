@@ -1,4 +1,4 @@
-name: Build Android APK v2.0
+name: Build Android APK v2.1
 
 on:
   push:
@@ -21,7 +21,7 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Generate Android AI Agent v2.0 (Glass + Gemini 4 Hydrogen)
+      - name: Generate Android AI Agent v2.1 (Glass + Gemini 4 Hydrogen + Schema/LowThinking)
         run: |
           python3 - << 'PYEOF'
           import os
@@ -82,8 +82,8 @@ jobs:
                   applicationId = "com.aiagent.android"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 20
-                  versionName = "2.0"
+                  versionCode = 21
+                  versionName = "2.1"
               }
 
               signingConfigs {
@@ -1192,7 +1192,8 @@ jobs:
                   checklist: List<ChecklistItem>,
                   history: List<String>,
                   installedAppsSummary: String?,
-                  screenshotBase64: String?
+                  screenshotBase64: String?,
+                  onStatus: ((String) -> Unit)? = null
               ): AgentPlan = withContext(Dispatchers.IO) {
                   val promptBuilder = StringBuilder()
                   promptBuilder.append("دستور کامل کاربر (باید ۱۰۰٪ و بدون جا انداختن هیچ بخشی انجام شود):\n$userGoal\n\n")
@@ -1234,6 +1235,17 @@ jobs:
                       }
                   }
 
+                  val genConfig = JSONObject()
+                      .put("responseMimeType", "application/json")
+                      .put("responseSchema", buildResponseSchema())
+                  val lowerModel = model.trim().lowercase()
+                  if (lowerModel.contains("gemini-4") || lowerModel.contains("gemini-3")) {
+                      genConfig.put(
+                          "thinkingConfig",
+                          JSONObject().put("thinkingLevel", "LOW")
+                      )
+                  }
+
                   val body = JSONObject()
                       .put(
                           "system_instruction",
@@ -1243,11 +1255,7 @@ jobs:
                           "contents",
                           JSONArray().put(JSONObject().put("role", "user").put("parts", parts))
                       )
-                      .put(
-                          "generationConfig",
-                          JSONObject()
-                              .put("responseMimeType", "application/json")
-                      )
+                      .put("generationConfig", genConfig)
 
                   val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/${model.trim()}:generateContent?key=${apiKey.trim()}"
                   var lastErr: Exception? = null
@@ -1258,7 +1266,7 @@ jobs:
                               requestMethod = "POST"
                               setRequestProperty("Content-Type", "application/json; charset=UTF-8")
                               connectTimeout = 25000
-                              readTimeout = 45000
+                              readTimeout = 90000
                               doOutput = true
                           }
                           OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
@@ -1272,6 +1280,7 @@ jobs:
                           }
                           if (code == 429 || code == 500 || code == 502 || code == 503 || code == 504) {
                               lastErr = Exception("API $code: ${rawResp.take(180)}")
+                              onStatus?.invoke("🔄 خطای موقت $code — تلاش مجدد (${attempt + 1}/4)...")
                               delay(attempt * 2000L)
                               continue
                           }
@@ -1282,6 +1291,7 @@ jobs:
                           val retryable = msg.contains("timeout") || msg.contains("timed out") ||
                               msg.contains("429") || msg.contains("503") || msg.contains("502") || msg.contains("500")
                           if (retryable && attempt < 4) {
+                              onStatus?.invoke("🔄 تاخیر شبکه — تلاش مجدد (${attempt + 1}/4)...")
                               delay(attempt * 2000L)
                               continue
                           }
@@ -1289,6 +1299,117 @@ jobs:
                       }
                   }
                   throw lastErr ?: Exception("خطای ناشناخته در ارتباط با Gemini")
+              }
+
+              private fun buildResponseSchema(): JSONObject {
+                  val checklistItemProps = JSONObject()
+                      .put("task", JSONObject().put("type", "STRING"))
+                      .put("done", JSONObject().put("type", "BOOLEAN"))
+                  val checklistItemSchema = JSONObject()
+                      .put("type", "OBJECT")
+                      .put("properties", checklistItemProps)
+                      .put("required", JSONArray().put("task").put("done"))
+
+                  val actionProps = JSONObject()
+                      .put("type", JSONObject().put("type", "STRING"))
+                      .put("index", JSONObject().put("type", "INTEGER").put("nullable", true))
+                      .put("x", JSONObject().put("type", "INTEGER").put("nullable", true))
+                      .put("y", JSONObject().put("type", "INTEGER").put("nullable", true))
+                      .put("text", JSONObject().put("type", "STRING").put("nullable", true))
+                      .put("submit", JSONObject().put("type", "BOOLEAN").put("nullable", true))
+                      .put("direction", JSONObject().put("type", "STRING").put("nullable", true))
+                      .put("app", JSONObject().put("type", "STRING").put("nullable", true))
+                      .put("url", JSONObject().put("type", "STRING").put("nullable", true))
+                      .put("ms", JSONObject().put("type", "INTEGER").put("nullable", true))
+                  val actionSchema = JSONObject()
+                      .put("type", "OBJECT")
+                      .put("properties", actionProps)
+                      .put("required", JSONArray().put("type"))
+
+                  val rootProps = JSONObject()
+                      .put("understanding", JSONObject().put("type", "STRING"))
+                      .put("checklist", JSONObject().put("type", "ARRAY").put("items", checklistItemSchema))
+                      .put("current_subtask", JSONObject().put("type", "STRING"))
+                      .put(
+                          "status",
+                          JSONObject()
+                              .put("type", "STRING")
+                              .put("enum", JSONArray().put("continue").put("done").put("fail"))
+                      )
+                      .put("is_pure_question", JSONObject().put("type", "BOOLEAN"))
+                      .put("reply", JSONObject().put("type", "STRING"))
+                      .put("actions", JSONObject().put("type", "ARRAY").put("items", actionSchema))
+
+                  return JSONObject()
+                      .put("type", "OBJECT")
+                      .put("properties", rootProps)
+                      .put(
+                          "required",
+                          JSONArray()
+                              .put("understanding")
+                              .put("checklist")
+                              .put("current_subtask")
+                              .put("status")
+                              .put("is_pure_question")
+                              .put("reply")
+                              .put("actions")
+                      )
+              }
+
+              suspend fun testConnection(): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+                  val start = System.currentTimeMillis()
+                  try {
+                      val pingSchema = JSONObject()
+                          .put("type", "OBJECT")
+                          .put("properties", JSONObject().put("ok", JSONObject().put("type", "BOOLEAN")))
+                          .put("required", JSONArray().put("ok"))
+                      val genCfg = JSONObject()
+                          .put("responseMimeType", "application/json")
+                          .put("responseSchema", pingSchema)
+                          .put("maxOutputTokens", 128)
+                      val lowerModel = model.trim().lowercase()
+                      if (lowerModel.contains("gemini-4") || lowerModel.contains("gemini-3")) {
+                          genCfg.put("thinkingConfig", JSONObject().put("thinkingLevel", "LOW"))
+                      }
+                      val body = JSONObject()
+                          .put(
+                              "contents",
+                              JSONArray().put(
+                                  JSONObject()
+                                      .put("role", "user")
+                                      .put("parts", JSONArray().put(JSONObject().put("text", "Respond with {"ok": true}")))
+                              )
+                          )
+                          .put("generationConfig", genCfg)
+
+                      val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/${model.trim()}:generateContent?key=${apiKey.trim()}"
+                      val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                          requestMethod = "POST"
+                          setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                          connectTimeout = 20000
+                          readTimeout = 35000
+                          doOutput = true
+                      }
+                      OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
+                      val code = conn.responseCode
+                      val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                      val rawResp = stream?.let { BufferedReader(InputStreamReader(it, Charsets.UTF_8)).readText() }.orEmpty()
+                      conn.disconnect()
+                      val elapsed = System.currentTimeMillis() - start
+
+                      if (code in 200..299) {
+                          Pair(true, "✅ اتصال به ${model.trim()} موفق بود (${elapsed}ms)")
+                      } else {
+                          val detail = try {
+                              JSONObject(rawResp).optJSONObject("error")?.optString("message").orEmpty()
+                          } catch (_: Exception) {
+                              rawResp.take(160)
+                          }
+                          Pair(false, "❌ خطای API ($code): ${detail.ifBlank { rawResp.take(160) }}")
+                      }
+                  } catch (e: Exception) {
+                      Pair(false, "❌ خطای شبکه/اتصال: ${e.message ?: "نامشخص"} (VPN را بررسی کن)")
+                  }
               }
 
               private fun parsePlan(rawResp: String): AgentPlan {
@@ -1388,7 +1509,8 @@ jobs:
               private val apiKey: String,
               private val model: String,
               private val maxSteps: Int,
-              private val onUpdate: (String) -> Unit
+              private val onUpdate: (String) -> Unit,
+              private val onLiveStatus: (String) -> Unit = {}
           ) {
               suspend fun run(userGoal: String): String {
                   var service = AgentAccessibilityService.instance
@@ -1420,6 +1542,7 @@ jobs:
                   var lastActionFailed = false
 
                   for (step in 1..maxSteps) {
+                      onLiveStatus("🔍 مرحله $step از $maxSteps: در حال خواندن صفحه...")
                       val snapshot = service.captureSnapshot()
                       if (snapshot.hash == lastHash) {
                           sameHashCount++
@@ -1436,6 +1559,7 @@ jobs:
 
                       val appsForStep = if (step == 1 || lastActionFailed || !inExternalApp) appsSummary else null
 
+                      onLiveStatus("🤖 مرحله $step: در حال ارسال به $model (thinkingLevel: LOW)...")
                       val plan = try {
                           client.planNextStep(
                               userGoal = userGoal,
@@ -1445,7 +1569,8 @@ jobs:
                               checklist = checklist,
                               history = history,
                               installedAppsSummary = appsForStep,
-                              screenshotBase64 = screenshotB64
+                              screenshotBase64 = screenshotB64,
+                              onStatus = { st -> onLiveStatus(st) }
                           )
                       } catch (e: CancellationException) {
                           throw e
@@ -1494,6 +1619,7 @@ jobs:
 
                       val label = plan.currentSubtask.ifBlank { plan.understanding }
                       if (label.isNotBlank()) {
+                          onLiveStatus("⚡ مرحله $step: $label")
                           onUpdate("⚡ مرحله $step: $label")
                       }
 
@@ -1700,6 +1826,7 @@ jobs:
 
               private lateinit var statusBanner: TextView
               private lateinit var statusActionBtn: Button
+              private lateinit var liveStatusTv: TextView
               private lateinit var modelChip: TextView
               private lateinit var chatScroll: ScrollView
               private lateinit var chatContainer: LinearLayout
@@ -1806,7 +1933,7 @@ jobs:
                   }
 
                   val titleTv = TextView(this).apply {
-                      text = "ایجنت هوشمند ۲.۰"
+                      text = "ایجنت هوشمند ۲.۱"
                       setTextColor(Color.WHITE)
                       textSize = 16.5f
                   }
@@ -1870,6 +1997,21 @@ jobs:
                   statusRow.addView(statusBanner)
                   statusRow.addView(statusActionBtn)
                   root.addView(statusRow)
+
+                  liveStatusTv = TextView(this).apply {
+                      textSize = 12f
+                      setTextColor(Color.parseColor("#E0F2FE"))
+                      background = GlassStyle.glassGradientPanel(
+                          this@MainActivity, "#3338BDF8", "#338B5CF6", "#667DD3FC", 14
+                      )
+                      setPadding(dp(12), dp(7), dp(12), dp(7))
+                      visibility = View.GONE
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = dp(6) }
+                  }
+                  root.addView(liveStatusTv)
 
                   chatScroll = ScrollView(this).apply {
                       layoutParams = LinearLayout.LayoutParams(
@@ -2109,6 +2251,55 @@ jobs:
                       container.addView(label("حداکثر مراحل:"))
                       container.addView(stepsInput)
 
+                      val testResultTv = TextView(this).apply {
+                          textSize = 12f
+                          setTextColor(Color.parseColor("#E2E8F0"))
+                          visibility = View.GONE
+                          setPadding(dp(8), dp(6), dp(8), dp(6))
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(8) }
+                      }
+
+                      val testConnBtn = Button(this).apply {
+                          text = "🔌 تست اتصال به مدل"
+                          isAllCaps = false
+                          setTextColor(Color.WHITE)
+                          background = GlassStyle.glassGradientPanel(
+                              this@MainActivity, "#4422C55E", "#4406B6D4", "#8086EFAC", 14
+                          )
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply { bottomMargin = dp(8) }
+                          setOnClickListener {
+                              val k = keyInput.text.toString().trim()
+                              val m = modelInput.text.toString().trim().ifEmpty { DEFAULT_MODEL }
+                              if (k.isEmpty()) {
+                                  testResultTv.text = "⚠️ ابتدا کلید Gemini API را وارد کن"
+                                  testResultTv.setTextColor(Color.parseColor("#FDE047"))
+                                  testResultTv.visibility = View.VISIBLE
+                                  return@setOnClickListener
+                              }
+                              isEnabled = false
+                              testResultTv.text = "⏳ در حال تست اتصال به $m..."
+                              testResultTv.setTextColor(Color.parseColor("#7DD3FC"))
+                              testResultTv.visibility = View.VISIBLE
+                              lifecycleScope.launch {
+                                  val (ok, msg) = GeminiClient(k, m).testConnection()
+                                  testResultTv.text = msg
+                                  testResultTv.setTextColor(
+                                      if (ok) Color.parseColor("#86EFAC") else Color.parseColor("#FCA5A5")
+                                  )
+                                  isEnabled = true
+                              }
+                          }
+                      }
+
+                      container.addView(testConnBtn)
+                      container.addView(testResultTv)
+
                       val accBtn = Button(this).apply {
                           text = "🔓 باز کردن تنظیمات دسترس‌پذیری"
                           isAllCaps = false
@@ -2345,6 +2536,10 @@ jobs:
                               val model = prefs.getString("model", DEFAULT_MODEL).orEmpty().trim().ifEmpty { DEFAULT_MODEL }
                               val maxSteps = prefs.getInt("max_steps", 40)
 
+                              runOnUiThread {
+                                  liveStatusTv.text = "🚀 شروع اجرای دستور با $model..."
+                                  liveStatusTv.visibility = View.VISIBLE
+                              }
                               val runner = AgentRunner(
                                   context = this@MainActivity,
                                   apiKey = apiKey,
@@ -2352,6 +2547,12 @@ jobs:
                                   maxSteps = maxSteps,
                                   onUpdate = { stepMsg ->
                                       runOnUiThread { addMessage(isUser = false, text = stepMsg) }
+                                  },
+                                  onLiveStatus = { statusText ->
+                                      runOnUiThread {
+                                          liveStatusTv.text = statusText
+                                          liveStatusTv.visibility = View.VISIBLE
+                                      }
                                   }
                               )
                               val finalResult = runner.run(goal)
@@ -2362,6 +2563,7 @@ jobs:
                       } finally {
                           isProcessingQueue = false
                           stopBtn.visibility = View.GONE
+                          liveStatusTv.visibility = View.GONE
                           updateAccessibilityBanner()
                       }
                   }
@@ -2553,7 +2755,7 @@ jobs:
           }
           ''')
 
-          print("Generated Android AI Agent v2.0 successfully.")
+          print("Generated Android AI Agent v2.1 successfully.")
           PYEOF
 
       - name: Generate Release Keystore
@@ -2573,6 +2775,6 @@ jobs:
       - name: Upload Signed Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: AndroidAIAgent-v2.0-APK
+          name: AndroidAIAgent-v2.1-APK
           path: AndroidAIAgentApp/app/build/outputs/apk/release/app-release.apk
 
